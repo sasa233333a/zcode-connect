@@ -56,6 +56,10 @@ public actor RelayAccountService {
     private let session: URLSession
     private let endpoint = URL(string: "https://zcode.z.ai")!
     private let decoder: JSONDecoder
+    /// Same-process fallback when the keychain refuses writes (observed on
+    /// unsigned simulator builds after a reinstall); a signed app normally
+    /// never needs it.
+    private var memoryAccount: RelayAccount?
 
     public init(session: URLSession = .shared) {
         self.session = session
@@ -152,10 +156,15 @@ public actor RelayAccountService {
         }
     }
 
+    /// Adopts an account for this process run when the keychain write failed.
+    public func adoptInMemory(_ account: RelayAccount) {
+        memoryAccount = account
+    }
+
     /// Exchanges the account JWT for a short-lived terminal token. The token is
     /// scoped by the relay to the terminal role and is never persisted.
     public func terminalToken() async throws -> String {
-        guard let account = Self.storedAccount() else {
+        guard let account = Self.storedAccount() ?? memoryAccount else {
             throw RelayFailure("relay_account_login_required", "请先登录 ZCode 账号。手机和电脑需要登录同一账号。")
         }
         guard Self.validCredential(account.jwt) else {
@@ -253,13 +262,12 @@ private enum RelayAccountKeychain {
             kSecAttrAccessible as String: kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
         ]
         let status = SecItemUpdate(query as CFDictionary, attributes as CFDictionary)
-        if status == errSecItemNotFound {
-            var item = query
-            attributes.forEach { item[$0.key] = $0.value }
-            guard SecItemAdd(item as CFDictionary, nil) == errSecSuccess else {
-                throw RelayFailure("relay_account_storage_failed", "无法保存登录信息，请重试。")
-            }
-        } else if status != errSecSuccess {
+        if status == errSecSuccess { return }
+        // Some sandboxes refuse updates to existing items; recreate it instead.
+        SecItemDelete(query as CFDictionary)
+        var item = query
+        attributes.forEach { item[$0.key] = $0.value }
+        guard SecItemAdd(item as CFDictionary, nil) == errSecSuccess else {
             throw RelayFailure("relay_account_storage_failed", "无法保存登录信息，请重试。")
         }
     }

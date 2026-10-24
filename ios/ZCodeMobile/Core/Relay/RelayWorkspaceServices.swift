@@ -56,16 +56,36 @@ public extension RelayClient {
         }
     }
     /// Fallback catalog source for desktops without readWorkspaceState. The model
-    /// list and current mode/thought come from the newest task's settings, which
-    /// the desktop keeps in the exact legacy shape.
+    /// list and current mode/thought come from a task's settings, which the
+    /// desktop keeps in the exact legacy shape. ZCode 3.16 only allows
+    /// `session/read` while the runtime is active, so a completed task is cold
+    /// restored through a temporary subscription first; active tasks are read
+    /// directly, and a failure moves on to the next candidate.
     private func sessionCatalogWorkspaceState() async throws -> RelayWorkspaceState {
         guard let bridge else { throw RelayFailure.closed() }
         let tasks = try await listTasks()
-        guard let latest = tasks.first(where: { $0.workspacePath == bridge.workspacePath }) ?? tasks.first else {
-            throw RelayFailure("settings_unavailable", "这个项目还没有任务，暂时读不到电脑的模型配置。")
+        let scoped = tasks.filter { $0.workspacePath == bridge.workspacePath || tasks.count == 0 }
+        let candidates = scoped.isEmpty ? tasks : scoped
+        func rank(_ status: String?) -> Int {
+            if ["running", "waiting"].contains(status ?? "") { return 0 }
+            if status == "idle" { return 1 }
+            return 2
         }
-        let snapshot = try await readSession(latest.id, messageLimit: 1)
-        return try RelayWorkspaceState(raw: .object(["settings": snapshot.raw["settings"]]))
+        let ordered = candidates.sorted { rank($0.status ?? $0.displayStatus) < rank($1.status ?? $1.displayStatus) }
+        for candidate in ordered.prefix(3) {
+            let status = candidate.status ?? candidate.displayStatus
+            let needsRestore = !["running", "waiting"].contains(status ?? "")
+            if needsRestore { _ = try? await subscribe(sessionID: candidate.id) }
+            do {
+                let snapshot = try await readSession(candidate.id, messageLimit: 1)
+                if needsRestore { try? await unsubscribe(sessionID: candidate.id) }
+                return try RelayWorkspaceState(raw: .object(["settings": snapshot.raw["settings"]]))
+            } catch {
+                if needsRestore { try? await unsubscribe(sessionID: candidate.id) }
+                continue
+            }
+        }
+        throw RelayFailure("settings_unavailable", "这个项目还没有可读取的任务，暂时读不到电脑的模型配置。")
     }
     func listModels() async throws -> [RelayJSON] { try await readWorkspaceState().models }
 
