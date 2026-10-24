@@ -186,6 +186,9 @@ final class AppStore {
 
     var relayWorkspaces: [RelayWorkspace] = []
     var relayAccount: RelayAccount?
+    var discoveredDevices: [RelayDiscoveredDevice] = []
+    var isDiscoveringDevices = false
+    var discoveryError: String?
     private(set) var relayWorkspaceSelection: RelayWorkspaceSelectionContext?
     @ObservationIgnored private var relaySelectionOperation: UUID?
     @ObservationIgnored private var relayClient: RelayClient?
@@ -205,6 +208,7 @@ final class AppStore {
     @ObservationIgnored private var automaticConnectionBlocks: [String: String] = [:]
     @ObservationIgnored private var isApplicationActive = true
     @ObservationIgnored private var didStart = false
+    @ObservationIgnored private var startCompleted = false
     @ObservationIgnored private var connectedAt: Date?
     @ObservationIgnored private let reconnectDelay: @Sendable (Duration) async throws -> Void
     @ObservationIgnored private var uploadedAttachments: [String: String] = [:]
@@ -598,6 +602,7 @@ final class AppStore {
     func start() async {
         guard !didStart else { return }
         didStart = true
+        defer { startCompleted = true }
         #if DEBUG
         if ProcessInfo.processInfo.arguments.contains("--bridge-acceptance"),
            let token = ProcessInfo.processInfo.environment["ZCODE_ACCEPTANCE_TOKEN"] {
@@ -619,6 +624,10 @@ final class AppStore {
         let flags = ProcessInfo.processInfo.arguments.filter { $0.hasPrefix("--") }
         RelayTestLog.write("start flags " + flags.joined(separator: " "))
         if let path = relayTestAccountFilePath() { await importRelayTestAccount(path: path) }
+        if ProcessInfo.processInfo.arguments.contains("--relay-test-discover") {
+            await runRelayTestDiscovery(openFirstTask: ProcessInfo.processInfo.arguments.contains("--relay-test-open"))
+            return
+        }
         if let (pairURL, shouldOpen) = relayTestArguments() {
             await runRelayTestPairing(url: pairURL, openFirstTask: shouldOpen)
             return
@@ -628,6 +637,9 @@ final class AppStore {
             Task { await self?.networkDidBecomeAvailable() }
         }
         networkMonitor.start()
+        if relayAccount != nil, profiles.isEmpty {
+            await refreshDiscoveredDevices()
+        }
         await restoreSavedConnection()
     }
 
@@ -724,6 +736,66 @@ final class AppStore {
         }
     }
 
+    private func runRelayTestDiscovery(openFirstTask: Bool) async {
+        guard relayAccount != nil else {
+            RelayTestLog.write("discover fail: no account")
+            return
+        }
+        await refreshDiscoveredDevices()
+        RelayTestLog.write("discovered count=\(discoveredDevices.count) platforms=" + discoveredDevices.map { $0.platform ?? "?" }.joined(separator: ","))
+        guard let device = discoveredDevices.first(where: { $0.platform == "darwin" }) ?? discoveredDevices.first else {
+            RelayTestLog.write("discover fail: no device \(discoveryError ?? "")")
+            return
+        }
+        let ok = await connectDiscoveredDevice(device)
+        RelayTestLog.write("discover connect ok=\(ok) online=\(connection.isOnline) workspaces=\(relayWorkspaces.count) sessions=\(sessions.count) active=\(activeProfile?.relayWorkspaceKey ?? "nil")")
+        if openFirstTask { await relayTestOpenFirstTask() }
+        if ProcessInfo.processInfo.arguments.contains("--relay-test-image") { await relayTestUploadImage() }
+        if ProcessInfo.processInfo.arguments.contains("--relay-test-switch") {
+            let currentID = activeProfileID
+            let target = profiles.first { $0.id != currentID && $0.relayWorkspaceKey?.contains("zocode connect") == true }
+                ?? profiles.first { $0.id != currentID }
+            if let target {
+                RelayTestLog.write("switch begin \(target.relayWorkspaceKey ?? "nil")")
+                await switchComputer(target, confirmedControllerReplacement: true)
+                RelayTestLog.write("switch done online=\(connection.isOnline) sessions=\(sessions.count) active=\(activeProfile?.relayWorkspaceKey ?? "nil")")
+                if openFirstTask { await relayTestOpenFirstTask() }
+            } else {
+                RelayTestLog.write("switch fail: no other workspace")
+            }
+        }
+        if ProcessInfo.processInfo.arguments.contains("--relay-test-open-cached") {
+            let target = homeDeviceGroups.flatMap(\.workspaces).first {
+                !$0.isActive && !$0.sessions.isEmpty
+            }
+            if let target, let session = target.sessions.first {
+                RelayTestLog.write("cached open begin workspace=\(target.title) session=\(session.id)")
+                openSessionEverywhere(session.id)
+                for _ in 0..<80 {
+                    if currentSessionID == session.id { break }
+                    try? await Task.sleep(for: .milliseconds(250))
+                }
+                RelayTestLog.write("cached open done path=\(currentSessionID ?? "nil") online=\(connection.isOnline) active=\(activeProfile?.relayWorkspaceKey ?? "nil")")
+            } else {
+                RelayTestLog.write("cached open fail: no inactive workspace with sessions")
+            }
+        }
+        if ProcessInfo.processInfo.arguments.contains("--relay-test-reconnect") {
+            RelayTestLog.write("reconnect force")
+            relayStreamEnded(RelayFailure("relay_disconnected", "Forced reconnect test."), epoch: connectionEpoch)
+            try? await Task.sleep(for: .milliseconds(400))
+            RelayTestLog.write("reconnect forced online=\(connection.isOnline) reconnecting=\(isAutoReconnecting) attempt=\(reconnectAttempt)")
+            for _ in 0..<80 {
+                if connection.isOnline { break }
+                try? await Task.sleep(for: .milliseconds(250))
+            }
+            RelayTestLog.write("reconnect online=\(connection.isOnline) sessions=\(sessions.count) reconnecting=\(isAutoReconnecting)")
+        }
+        if ProcessInfo.processInfo.arguments.contains("--relay-test-home") {
+            path = []
+        }
+    }
+
     private func relayTestOpenFirstTask() async {
         for _ in 0..<150 {
             if relayTestDidOpen { return }
@@ -773,7 +845,9 @@ final class AppStore {
         let wasActive = isApplicationActive
         isApplicationActive = true
         if !wasActive { automaticConnectionAttempt = 0 }
-        guard !isReferenceMode else { return }
+        // `start()` owns the first restore/discovery; a concurrent scene-active
+        // callback must not open a second controller for the same desktop.
+        guard startCompleted, !isReferenceMode else { return }
         refreshRelayAccountIfChanged()
         if isAutoReconnecting { return }
         if connection.isOnline, client != nil {
@@ -848,6 +922,9 @@ final class AppStore {
     private func relayConnectionFailed(_ error: Error, profile: ConnectionProfile, reportFailure: Bool) {
         tearDownConnection()
         let code = (error as? RelayFailure)?.code ?? (error as? BridgeFailure)?.code ?? "connection_failed"
+        #if DEBUG
+        RelayTestLog.write("connection failed [\(code)] report=\(reportFailure) profile=\(profile.relayWorkspaceKey ?? "nil")")
+        #endif
         let message = code == "controller_replaced"
             ? "另一台手机已接管连接。自动重连已暂停，你可以在连接页面手动重新连接。"
             : Self.connectionErrorMessage(error)
@@ -983,7 +1060,31 @@ final class AppStore {
             await refresh()
             return
         }
+        // Switching projects on the same computer keeps the existing relay
+        // socket and bridge session. Re-pairing here races the old controller
+        // and can be rejected as "another phone took over".
+        if !isReferenceMode, let active = activeProfile,
+           active.isRelay, profile.isRelay, active.id != profile.id,
+           active.relayDeviceID == profile.relayDeviceID,
+           (active.relayServiceID ?? RelayPairing.legacyServiceID(profileURL: active.baseURL))
+               == (profile.relayServiceID ?? RelayPairing.legacyServiceID(profileURL: profile.baseURL)),
+           let workspaceKey = profile.relayWorkspaceKey,
+           relayClient != nil, relayBootstrap != nil, connection.isOnline {
+            cancelAutomaticConnection()
+            let attempt = UUID()
+            relayConnectionAttempt = attempt
+            let context = RelayWorkspaceSelectionContext(attempt: attempt, epoch: connectionEpoch,
+                                                          name: profile.name, reason: "")
+            do {
+                try await completeRelayPairing(workspaceKey: workspaceKey, name: profile.name, context: context)
+            } catch is CancellationError {
+            } catch {
+                errorMessage = error.localizedDescription
+            }
+            return
+        }
         guard !profile.isRelay || confirmedControllerReplacement else { return }
+        if profile.isRelay { await retireRelayTransport() }
         cancelAutomaticConnection()
         tearDownConnection()
         isReferenceMode = false; referenceReview = false
@@ -1193,15 +1294,68 @@ final class AppStore {
     }
 
     @discardableResult
-    func beginRelayPairing(_ raw: String, confirmedControllerReplacement: Bool, attempt: UUID = UUID(), reportFailure: Bool = false) async throws -> RelayWorkspaceSelectionContext {
+    func beginRelayPairing(_ raw: String, confirmedControllerReplacement: Bool, attempt: UUID = UUID(),
+                           reportFailure: Bool = false, autoSelectWorkspace: Bool = false) async throws -> RelayWorkspaceSelectionContext {
         let pairing = try RelayPairing(payload: raw)
         guard confirmedControllerReplacement else { throw BridgeFailure(message: "请先确认连接这台电脑。", code: "controller_confirmation_required") }
         // Validate before touching the current connection: a missing login or a
         // legacy QR must never tear down an already working computer.
         try validate(pairing: pairing)
         guard !Task.isCancelled else { throw CancellationError() }
+        await retireRelayTransport()
         disconnect()
-        return try await pairRelay(raw, confirmedControllerReplacement: confirmedControllerReplacement, attempt: attempt, reportFailure: reportFailure, pairing: pairing)
+        let context = try await pairRelay(raw, confirmedControllerReplacement: confirmedControllerReplacement,
+                                          attempt: attempt, reportFailure: reportFailure, pairing: pairing)
+        if autoSelectWorkspace {
+            if let workspace = preferredWorkspace(for: pairing) {
+                try await completeRelayPairing(workspaceKey: workspace.id, name: "", context: context)
+            } else {
+                offerRelayWorkspaceSelection(context, name: pairing.deviceName)
+            }
+        }
+        return context
+    }
+
+    /// Connecting is device-level. Prefer the project last used for this
+    /// computer, then the project the desktop is currently showing; only ask the
+    /// user to choose when the desktop has no attachable project at all.
+    private func preferredWorkspace(for pairing: RelayPairing) -> RelayWorkspace? {
+        let sameDevice = profiles.filter {
+            $0.relayDeviceID == pairing.deviceID
+                && ($0.relayServiceID ?? RelayPairing.legacyServiceID(profileURL: $0.baseURL)) == pairing.serviceID
+        }
+        let attachable = relayWorkspaces.filter(\.canAttach)
+        let tasks = relayBootstrap?.tasks ?? []
+        func taskCount(_ workspace: RelayWorkspace) -> Int {
+            tasks.filter { task in
+                if let identity = workspace.workspaceIdentity { return task.workspaceIdentity == identity }
+                return task.workspacePath == workspace.workspacePath
+            }.count
+        }
+        for key in sameDevice.compactMap(\.relayWorkspaceKey) {
+            if let workspace = attachable.first(where: { $0.id == key }), taskCount(workspace) > 0 {
+                return workspace
+            }
+        }
+        if let active = relayBootstrap?.activeWorkspaceKey,
+           let workspace = attachable.first(where: { $0.id == active }), taskCount(workspace) > 0 {
+            return workspace
+        }
+        // A workspace with no tasks cannot supply the model catalog on ZCode
+        // 3.16.3, so prefer one that can actually complete the connection.
+        return attachable.max { taskCount($0) < taskCount($1) } ?? attachable.first
+    }
+
+    /// Task count reported by the desktop's bootstrap catalog for another open
+    /// workspace. Nil means the catalog is not available right now.
+    func knownTaskCount(for profile: ConnectionProfile) -> Int? {
+        guard let key = profile.relayWorkspaceKey,
+              let workspace = relayWorkspaces.first(where: { $0.id == key }),
+              let tasks = relayBootstrap?.tasks else { return nil }
+        return tasks.filter { task in
+            if let identity = workspace.workspaceIdentity { return task.workspaceIdentity == identity }
+            return task.workspacePath == workspace.workspacePath
+        }.count
     }
 
     private func validate(pairing: RelayPairing) throws {
@@ -1219,6 +1373,10 @@ final class AppStore {
         guard confirmedControllerReplacement else { throw BridgeFailure(message: "请先确认连接这台电脑。", code: "controller_confirmation_required") }
         try validate(pairing: pairing)
         guard !Task.isCancelled else { throw CancellationError() }
+        // Close the old socket before opening the new one. Otherwise the relay
+        // can still consider this phone the previous controller and reject the
+        // immediate reconnect as a controller replacement.
+        await retireRelayTransport()
         tearDownConnection()
         relayConnectionAttempt = attempt
         let context = RelayWorkspaceSelectionContext(attempt: attempt, epoch: connectionEpoch, name: pairing.deviceName, reason: "")
@@ -1256,21 +1414,41 @@ final class AppStore {
             guard bootstrap.workspaces.contains(where: { $0.id == workspaceKey && $0.canAttach }) else {
                 throw BridgeFailure(message: "这个项目当前无法连接，请在电脑上激活后重试。", code: "relay_workspace_unavailable")
             }
+            // Cancel the old stream before closing its adapter; otherwise the
+            // normal end of that stream is mistaken for a dropped connection
+            // while the workspace switch is still in flight.
+            streamTask?.cancel(); refreshTask?.cancel()
+            streamTask = nil; refreshTask = nil
+            streamConnected = false
             if let old = client as? RelayRemoteTransport { await old.shutdown() }
             guard !Task.isCancelled, isCurrentRelaySelection(context) else { throw CancellationError() }
-            streamTask?.cancel(); refreshTask?.cancel()
             let bridge = try await paired.openWorkspace(key: workspaceKey)
             guard !Task.isCancelled, isCurrentRelaySelection(context) else { throw CancellationError() }
             let pairing = try RelayPairing(payload: raw)
             let adapter = try await RelayRemoteTransport(client: paired, bootstrap: bootstrap, bridge: bridge,
                                                          hostName: name.isEmpty ? pairing.deviceName : name)
             guard !Task.isCancelled, isCurrentRelaySelection(context) else { await adapter.shutdown(); throw CancellationError() }
-            let existing = profiles.first { $0.relayDeviceID == pairing.deviceID && $0.relayWorkspaceKey == workspaceKey
-                && ($0.relayServiceID ?? RelayPairing.legacyServiceID(profileURL: $0.baseURL)) == pairing.serviceID }
-            let profile = ConnectionProfile(id: existing?.id ?? UUID().uuidString,
-                name: name.isEmpty ? pairing.deviceName : name, baseURL: pairing.profileURL.absoluteString,
-                relayDeviceID: pairing.deviceID, relayWorkspaceKey: workspaceKey, relayServiceID: pairing.serviceID)
-            try CredentialStore.save(raw, id: profile.id)
+            let displayName = name.isEmpty ? pairing.deviceName : name
+            let sameDevice = { (candidate: ConnectionProfile) in
+                candidate.relayDeviceID == pairing.deviceID
+                    && (candidate.relayServiceID ?? RelayPairing.legacyServiceID(profileURL: candidate.baseURL)) == pairing.serviceID
+            }
+            // One connection is a computer, not a project: persist every opened
+            // workspace under the same device so the home screen can switch
+            // projects without another pairing flow.
+            var deviceProfiles: [ConnectionProfile] = []
+            for workspace in bootstrap.workspaces where workspace.canAttach {
+                let existing = profiles.first { sameDevice($0) && $0.relayWorkspaceKey == workspace.id }
+                let profile = ConnectionProfile(id: existing?.id ?? UUID().uuidString,
+                    name: displayName, baseURL: pairing.profileURL.absoluteString,
+                    relayDeviceID: pairing.deviceID, relayWorkspaceKey: workspace.id, relayServiceID: pairing.serviceID)
+                try CredentialStore.save(raw, id: profile.id)
+                deviceProfiles.append(profile)
+            }
+            guard let profile = deviceProfiles.first(where: { $0.relayWorkspaceKey == workspaceKey }) else {
+                await adapter.shutdown()
+                throw BridgeFailure(message: "这个项目当前无法连接，请在电脑上激活后重试。", code: "relay_workspace_unavailable")
+            }
             let keepsReadingState = !isReferenceMode && activeProfileID == profile.id && activeProfile?.baseURL == profile.baseURL
             client = adapter
             if !keepsReadingState {
@@ -1281,8 +1459,7 @@ final class AppStore {
             }
             isReferenceMode = false; referenceReview = false
             activeProfileID = profile.id
-            if let index = profiles.firstIndex(where: { $0.id == profile.id }) { profiles[index] = profile }
-            else { profiles.append(profile) }
+            profiles = profiles.filter { !sameDevice($0) } + deviceProfiles
             if !keepsReadingState { try loadScopedState() }
             else { reloadScopedPreferences(); pendingSubmissions = try submissionJournal.read(scope: persistenceScope) }
             save(profiles, key: "connections")
@@ -1326,18 +1503,59 @@ final class AppStore {
 
     func signOutRelayAccount() {
         RelayAccountService.clear()
+        Task { await RelayAccountService.shared.clearInMemory() }
         relayAccount = nil
+        discoveredDevices = []
+        discoveryError = nil
     }
 
     func refreshRelayAccount() {
-        relayAccount = RelayAccountService.storedAccount()
+        guard let stored = RelayAccountService.storedAccount() else { return }
+        relayAccount = stored
     }
 
     /// Returning to the foreground is a cheap moment to notice a token obtained
     /// in another process or a profile imported while the app was suspended.
+    /// A missing keychain item must not erase the in-memory fallback adopted
+    /// when the keychain refused a write (seen on unsigned simulator builds).
     func refreshRelayAccountIfChanged() {
-        let stored = RelayAccountService.storedAccount()
-        if stored?.jwt != relayAccount?.jwt { relayAccount = stored }
+        guard let stored = RelayAccountService.storedAccount() else { return }
+        if stored.jwt != relayAccount?.jwt { relayAccount = stored }
+    }
+
+    /// Ask the account service which desktops are already online. This replaces
+    /// the "add a computer" QR step for the normal case; the QR remains a
+    /// fallback for self-hosted relays and accounts with hidden devices.
+    func refreshDiscoveredDevices() async {
+        guard relayAccount != nil, !isDiscoveringDevices else {
+            if relayAccount == nil { discoveredDevices = [] }
+            return
+        }
+        isDiscoveringDevices = true
+        discoveryError = nil
+        defer { isDiscoveringDevices = false }
+        do {
+            discoveredDevices = try await RelayAccountService.shared.devices()
+        } catch {
+            discoveryError = error.localizedDescription
+            discoveredDevices = []
+        }
+    }
+
+    /// Connect to an account-discovered desktop. The first attachable project is
+    /// selected automatically; the home screen then exposes all open projects.
+    @discardableResult
+    func connectDiscoveredDevice(_ device: RelayDiscoveredDevice) async -> Bool {
+        do {
+            let raw = try device.pairingPayload()
+            _ = try await beginRelayPairing(raw, confirmedControllerReplacement: true, autoSelectWorkspace: true)
+            if connection.isOnline { return true }
+            if relayWorkspaceSelection != nil { sheet = .pairing }
+            return false
+        } catch {
+            errorMessage = error.localizedDescription
+            return false
+        }
     }
 
     static func validatedURL(_ text: String) -> URL? {
@@ -1354,6 +1572,12 @@ final class AppStore {
         cancelAutomaticConnection()
         if !isReferenceMode, let profile = activeProfile { setAutomaticConnectionBlock("manual_disconnect", profileID: profile.id) }
         tearDownConnection()
+    }
+
+    /// Await the old bridge/socket close before a new controller connection.
+    private func retireRelayTransport() async {
+        if let adapter = client as? RelayRemoteTransport { await adapter.shutdown() }
+        if let relayClient { await relayClient.disconnect() }
     }
 
     private func tearDownConnection() {
@@ -1407,20 +1631,25 @@ final class AppStore {
     }
 
     func removeConnection(_ profile: ConnectionProfile) {
-        if activeProfileID == profile.id {
+        let identity = Self.deviceIdentity(for: profile)
+        let affected = profiles.filter { Self.deviceIdentity(for: $0) == identity }
+        let affectedIDs = Set(affected.map(\.id))
+        if let activeProfileID, affectedIDs.contains(activeProfileID) {
             disconnect()
-            activeProfileID = nil
+            self.activeProfileID = nil
             defaults.removeObject(forKey: "activeConnection")
             path = []; projects = []; selectedProjectID = nil
             sessions = []
             transcripts = [:]
             histories = [:]; loadingHistory = []
         }
-        defaults.removeObject(forKey: "\(profile.id)|\(profile.baseURL)|readingState.v1")
-        defaults.removeObject(forKey: "\(profile.id)|\(profile.baseURL)|transcriptCache.v1")
-        profileReadingStates[profile.id] = nil
-        CredentialStore.remove(profile.id)
-        profiles.removeAll { $0.id == profile.id }
+        for item in affected {
+            defaults.removeObject(forKey: "\(item.id)|\(item.baseURL)|readingState.v1")
+            defaults.removeObject(forKey: "\(item.id)|\(item.baseURL)|transcriptCache.v1")
+            profileReadingStates[item.id] = nil
+            CredentialStore.remove(item.id)
+        }
+        profiles.removeAll { affectedIDs.contains($0.id) }
         save(profiles, key: "connections")
     }
 

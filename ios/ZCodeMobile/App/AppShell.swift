@@ -108,7 +108,8 @@ struct AppShell: View {
     private var isRelayTestRun: Bool {
         #if DEBUG
         let arguments = ProcessInfo.processInfo.arguments
-        return arguments.contains("--relay-test-pair") || arguments.contains("--live-activity-review")
+        return arguments.contains("--relay-test-pair") || arguments.contains("--relay-test-discover")
+            || arguments.contains("--live-activity-review") || arguments.contains("--onboarding-review")
         #else
         return false
         #endif

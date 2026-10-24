@@ -53,7 +53,9 @@ final class TaskNotifications: NSObject, UNUserNotificationCenterDelegate, @unch
     func requestAuthorizationIfNeeded() async {
         #if DEBUG
         let arguments = ProcessInfo.processInfo.arguments
-        if arguments.contains("--relay-test-pair") || arguments.contains("--live-activity-review") { return }
+        if arguments.contains("--relay-test-pair") || arguments.contains("--relay-test-discover")
+            || arguments.contains("--live-activity-review") || arguments.contains("--onboarding-review") { return }
+        if ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] != nil { return }
         #endif
         let center = UNUserNotificationCenter.current()
         let settings = await center.notificationSettings()
