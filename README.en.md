@@ -19,6 +19,7 @@ It is an independently developed native iOS client with a Liquid Glass interface
 - **Pick up existing work**: open projects and tasks, continue conversations, and read replies and execution steps.
 - **Connect to a computer once**: sign in and the App discovers computers already online on the same account, with no QR or per-project setup. You land directly in projects and conversations.
 - **Browse by project**: conversations are grouped by project; opening a conversation in another project switches the workspace in the background without reconnecting or re-pairing.
+- **iPad landscape**: a native three-column split view (computers/projects, conversations, chat) that collapses to the single-column layout in narrow windows.
 - **Automatic reconnection**: retry after network changes, returning to the foreground, or a brief relay interruption, with a manual retry in the banner.
 - **Notifications and Dynamic Island**: get notified when a task completes, waits for approval, or fails, and see the active task on the Dynamic Island and Lock Screen.
 - **Slash commands and mentions**: type `/` for the desktop's real slash commands and `@` to pick files from the current project.

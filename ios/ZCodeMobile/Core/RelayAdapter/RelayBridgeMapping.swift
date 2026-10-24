@@ -20,9 +20,11 @@ enum RelayBridgeMapping {
     }
     static func session(id: String, meta: RelayTaskMetadata?, snapshot: RelaySessionSnapshot?, projection: RelayConversationProjection?, bridge: RelayBridge, projectID: String) -> RelayJSON {
         let state = status(projection, snapshot: snapshot, meta: meta)
+        let workspaceName = URL(fileURLWithPath: bridge.workspacePath).lastPathComponent
+        let projectName = workspaceName.hasPrefix("draft-") ? "草稿项目" : workspaceName
         let controllable = meta?.provider == nil || meta?.provider == "glm"
         let archived = meta?.archived ?? false
-        var value: [String: RelayJSON] = ["id": .string(id), "title": .string(meta?.title.nilIfEmpty ?? projection?.title.nilIfEmpty ?? snapshot?.title.nilIfEmpty ?? "新任务"), "projectId": .string(projectID), "projectName": .string(URL(fileURLWithPath: bridge.workspacePath).lastPathComponent), "source": .string("official-relay"), "status": .string(state), "updatedAt": date(meta?.updatedAt ?? snapshot?.raw["session"]["updatedAt"].number), "pinned": .bool(meta?.pinned ?? false), "archived": .bool(archived),
+        var value: [String: RelayJSON] = ["id": .string(id), "title": .string(meta?.title.nilIfEmpty ?? projection?.title.nilIfEmpty ?? snapshot?.title.nilIfEmpty ?? "新任务"), "projectId": .string(projectID), "projectName": .string(projectName), "source": .string("official-relay"), "status": .string(state), "updatedAt": date(meta?.updatedAt ?? snapshot?.raw["session"]["updatedAt"].number), "pinned": .bool(meta?.pinned ?? false), "archived": .bool(archived),
             "unread": .bool(meta?.unreadAt != nil), "unreadAt": meta?.unreadAt.map(RelayJSON.number) ?? .null, "unreadScope": .string("desktop"),
             "capabilities": .object(["read": .bool(controllable), "send": .bool(controllable && !archived), "stop": .bool(controllable && (projection?.canStop ?? ["running", "waiting"].contains(state))), "approve": .bool(controllable), "changes": .bool(true), "markUnread": .bool(controllable), "rename": .bool(controllable), "pin": .bool(controllable), "archive": .bool(controllable), "fork": .bool(controllable && !archived && !(projection?.forkTargets.isEmpty ?? true))])]
         var provider = snapshot?.model["providerId"].string ?? projection?.config["provider"].string
