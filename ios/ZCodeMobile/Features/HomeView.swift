@@ -66,8 +66,7 @@ struct HomeView: View {
                     return workspace.id + "|" + project
                 }
                 for (key, items) in grouped {
-                    let project = workspace.projects.first { $0.id == items.first?.projectID }
-                    let name = items.first?.projectName ?? project?.name ?? workspace.title
+                    let name = workspace.title
                     result.append(HomeSection(id: key, device: device, workspace: workspace,
                                               projectName: name, projectKey: key, sessions: items))
                 }

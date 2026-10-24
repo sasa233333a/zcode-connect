@@ -424,6 +424,13 @@ final class AppStore {
         profileReadingStates = states
     }
 
+    static func workspaceDisplayName(path: String, projectName: String? = nil) -> String {
+        let last = (path as NSString).lastPathComponent
+        if last.hasPrefix("draft-") { return "草稿项目" }
+        if let projectName, !projectName.isEmpty, !projectName.hasPrefix("draft-") { return projectName }
+        return last.isEmpty ? "项目" : last
+    }
+
     static func deviceIdentity(for profile: ConnectionProfile) -> String {
         if let deviceID = profile.relayDeviceID, !deviceID.isEmpty {
             let service = profile.relayServiceID ?? profile.baseURL
@@ -445,9 +452,8 @@ final class AppStore {
                 let sessions = isActive ? self.sessions : (cached?.sessions ?? [])
                 let projects = isActive ? self.projects : (cached?.projects ?? [])
                 let path = profile.relayWorkspaceKey ?? projects.first?.path ?? profile.baseURL
-                let title = isActive
-                    ? (projects.first?.name ?? (path as NSString).lastPathComponent)
-                    : (cached?.projects.first?.name ?? (path as NSString).lastPathComponent)
+                let projectName = isActive ? projects.first?.name : cached?.projects.first?.name
+                let title = Self.workspaceDisplayName(path: path, projectName: projectName)
                 return HomeWorkspaceGroup(id: profile.id, profile: profile, title: title, path: path,
                                           isActive: isActive, isConnected: isActive && connection.isOnline,
                                           cachedAt: cached?.savedAt, sessions: sessions, projects: projects)

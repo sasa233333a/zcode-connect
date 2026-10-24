@@ -1,24 +1,18 @@
 import SwiftUI
+import UIKit
 
 struct AppShell: View {
     @Environment(AppStore.self) private var store
     @Environment(\.scenePhase) private var scenePhase
+    @Environment(\.horizontalSizeClass) private var horizontalSizeClass
     var body: some View {
         @Bindable var store = store
-        NavigationStack(path: $store.path) {
-            Group {
-                if store.requiresInitialConnection {
-                    PairingView(embedded: true, onboarding: true)
-                } else {
-                    HomeView()
-                }
+        Group {
+            if usesPadLayout {
+                PadShell()
+            } else {
+                phoneShell(path: $store.path)
             }
-                .navigationDestination(for: AppRoute.self) { route in
-                    switch route {
-                    case .session(let id): ChatView(sessionID: id)
-                    case .newSession: NewSessionView()
-                    }
-                }
         }
         .modifier(FloatingPanelOverlay())
         .sheet(item: $store.sheet) { destination in
@@ -66,6 +60,15 @@ struct AppShell: View {
         }
         .task {
             #if DEBUG
+            guard ProcessInfo.processInfo.arguments.contains("--pad-landscape-review") else { return }
+            try? await Task.sleep(for: .seconds(1))
+            if let scene = UIApplication.shared.connectedScenes.compactMap({ $0 as? UIWindowScene }).first {
+                scene.requestGeometryUpdate(.iOS(interfaceOrientations: .landscapeRight)) { _ in }
+            }
+            #endif
+        }
+        .task {
+            #if DEBUG
             guard ProcessInfo.processInfo.arguments.contains("--performance-probe") else { return }
             MotionPerformanceProbe.shared.start(sessionName: "scroll-review", metadata: ["configuration": "Debug", "arguments": ProcessInfo.processInfo.arguments.filter { $0.hasPrefix("--") }.joined(separator: " ")])
             do {
@@ -106,6 +109,31 @@ struct AppShell: View {
             }
         }
         .onOpenURL { store.openDeepLink($0) }
+    }
+
+    private var usesPadLayout: Bool {
+        UIDevice.current.userInterfaceIdiom == .pad
+            && horizontalSizeClass == .regular
+            && !store.requiresInitialConnection
+            && !store.isReferenceMode
+    }
+
+    private func phoneShell(path: Binding<[AppRoute]>) -> some View {
+        NavigationStack(path: path) {
+            Group {
+                if store.requiresInitialConnection {
+                    PairingView(embedded: true, onboarding: true)
+                } else {
+                    HomeView()
+                }
+            }
+            .navigationDestination(for: AppRoute.self) { route in
+                switch route {
+                case .session(let id): ChatView(sessionID: id)
+                case .newSession: NewSessionView()
+                }
+            }
+        }
     }
 
     private var isRelayTestRun: Bool {
