@@ -324,9 +324,30 @@ public struct RelaySessionSnapshot: Sendable, Equatable {
     public init(raw: RelayJSON) throws { _ = try raw["session"].requiringString("sessionId"); self.raw = raw }
     func supports(_ flag: String) -> Bool {
         let options = raw["settings"]["model"]["available"].array ?? []
-        let inputFlag = flag == "supportsImages" ? "supportsImage" : flag
-        for option in options where option["ref"] == model {
-            return option[flag].bool == true || option["properties"]["inputFormat"][inputFlag].bool == true
+        let current = model
+        let provider = current["providerId"].string
+        let modelID = current["modelId"].string
+        for option in options {
+            let ref = option["ref"]
+            // The desktop's `current` object can carry extra fields (for example
+            // `options`) that the catalog's compact `ref` does not. Match identity
+            // by provider/model instead of requiring whole-object equality.
+            let same = ref == current
+                || (provider != nil && modelID != nil
+                    && ref["providerId"].string == provider
+                    && ref["modelId"].string == modelID)
+            guard same else { continue }
+            let input = option["properties"]["inputFormat"]
+            switch flag {
+            case "supportsImages":
+                return option["supportsImages"].bool == true || option["supportsImage"].bool == true
+                    || input["supportsImage"].bool == true || input["supportsImages"].bool == true
+            case "supportsPdf":
+                return option["supportsPdf"].bool == true || option["supportsPDF"].bool == true
+                    || input["supportsPdf"].bool == true || input["supportsPDF"].bool == true
+            default:
+                return option[flag].bool == true || input[flag].bool == true
+            }
         }
         return false
     }

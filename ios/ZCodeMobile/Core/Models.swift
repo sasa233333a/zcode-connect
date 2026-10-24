@@ -312,6 +312,40 @@ struct ConnectionProfile: Identifiable, Codable, Hashable {
     var isRelay: Bool { relayDeviceID != nil }
 }
 
+/// A saved connection projected into the home catalog. A relay profile is one
+/// workspace on one desktop; the active profile contributes live tasks while
+/// other profiles contribute their last saved reading state.
+struct HomeWorkspaceGroup: Identifiable, Equatable {
+    var id: String
+    var profile: ConnectionProfile
+    var title: String
+    var path: String
+    var isActive: Bool
+    var isConnected: Bool
+    var cachedAt: Date?
+    var sessions: [RemoteSession]
+    var projects: [RemoteProject]
+}
+
+struct HomeDeviceGroup: Identifiable, Equatable {
+    var id: String
+    var name: String
+    var isActive: Bool
+    var connection: ConnectionState?
+    var workspaces: [HomeWorkspaceGroup]
+}
+
+enum TaskNotificationKind: String, Sendable {
+    case completed, waiting, failed
+}
+
+struct TaskNotificationEvent: Sendable, Equatable {
+    var kind: TaskNotificationKind
+    var sessionID: String
+    var title: String
+    var body: String
+}
+
 enum AppRoute: Hashable {
     case session(String)
     case newSession
