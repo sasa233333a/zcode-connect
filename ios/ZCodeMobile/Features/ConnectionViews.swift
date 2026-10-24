@@ -48,6 +48,11 @@ struct ConnectionsView: View {
     }
 }
 
+private enum PairingSheet: String, Identifiable {
+    case scanner, login
+    var id: String { rawValue }
+}
+
 struct PairingView: View {
     @Environment(AppStore.self) private var store
     @Environment(\.dismiss) private var dismiss
@@ -59,8 +64,7 @@ struct PairingView: View {
     @State private var token = ""
     @State private var certificateSHA256 = ""
     @State private var connecting = false
-    @State private var scanner = false
-    @State private var showLogin = false
+    @State private var activeSheet: PairingSheet?
     @State private var failure: String?
     @State private var relayPayload: String?
     @State private var relayServiceHost: String?
@@ -91,13 +95,17 @@ struct PairingView: View {
                 else { store.cancelRelayPairing(attempt: relayAttempt) }
             }
         }
-        .sheet(isPresented: $scanner) {
-            QRScanner { payload in
-                scanner = false
-                parse(payload)
+        .sheet(item: $activeSheet) { sheet in
+            switch sheet {
+            case .scanner:
+                QRScanner { payload in
+                    activeSheet = nil
+                    parse(payload)
+                }
+            case .login:
+                RelayLoginView()
             }
         }
-        .sheet(isPresented: $showLogin) { RelayLoginView() }
     }
     private var content: some View {
         Form {
@@ -115,7 +123,7 @@ struct PairingView: View {
                     LabeledContent("已登录", value: account.name)
                     Button("退出登录", role: .destructive) { store.signOutRelayAccount() }
                 } else {
-                    Button { showLogin = true } label: {
+                    Button { activeSheet = .login } label: {
                         Label("登录账号", systemImage: "person.crop.circle")
                     }
                     Text("手机和电脑需要登录同一账号（Z.ai 或 BigModel）。登录后再扫描电脑上的连接二维码。")
@@ -123,7 +131,7 @@ struct PairingView: View {
                 }
             } }
             if !choosingWorkspace { Section {
-                Button { scanner = true } label: {
+                Button { activeSheet = .scanner } label: {
                     Label("扫描连接二维码", systemImage: "qrcode.viewfinder")
                 }.disabled(!DataScannerViewController.isSupported || !DataScannerViewController.isAvailable)
                 Button {
@@ -275,7 +283,7 @@ struct PairingView: View {
                 failure = error.localizedDescription
                 if code == "account_login_required" || code == "relay_account_login_required" {
                     beganRelay = false
-                    showLogin = true
+                    activeSheet = .login
                 }
             }
         }

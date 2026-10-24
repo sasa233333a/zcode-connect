@@ -124,6 +124,7 @@ struct RelayLoginView: View {
     }
 }
 
+@MainActor
 private struct SafariView: UIViewControllerRepresentable {
     let url: URL
     func makeUIViewController(context: Context) -> SFSafariViewController {

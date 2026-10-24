@@ -32,7 +32,7 @@ public struct RelayLoginFlow: Identifiable, Sendable, Equatable {
 
 /// The two account systems supported by ZCode. The desktop and the phone must
 /// use the same one; a QR does not reveal which account issued it.
-public enum RelayAccountProvider: String, Sendable, CaseIterable {
+public enum RelayAccountProvider: String, Sendable, CaseIterable, Hashable {
     case zai
     case bigmodel
     public var label: String { self == .bigmodel ? "BigModel（国内版）" : "Z.ai（国际版）" }
