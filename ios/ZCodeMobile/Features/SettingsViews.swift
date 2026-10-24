@@ -1,9 +1,12 @@
 import SwiftUI
+import UserNotifications
+import UIKit
 
 struct SettingsView: View {
     @Environment(AppStore.self) private var store
     @Environment(\.dismiss) private var dismiss
     var embedded = false
+    @State private var notificationStatus: UNAuthorizationStatus?
     var body: some View {
         Group {
             if embedded { settingsForm }
@@ -37,6 +40,14 @@ struct SettingsView: View {
                     .accessibilityIdentifier("settings.completionNotifications")
                 Toggle("灵动岛实时状态", isOn: $store.liveActivitiesEnabled)
                     .accessibilityIdentifier("settings.liveActivities")
+                LabeledContent("通知权限", value: notificationStatusLabel)
+                Button("发送测试通知") { sendTestNotification() }
+                    .disabled(notificationStatus == .denied)
+                if notificationStatus == .denied {
+                    Button("打开系统通知设置") {
+                        if let url = URL(string: UIApplication.openSettingsURLString) { UIApplication.shared.open(url) }
+                    }
+                }
             } header: {
                 Text("通知与实时活动")
             } footer: {
@@ -86,6 +97,30 @@ struct SettingsView: View {
             if store.completionNotifications { Task { await TaskNotifications.shared.requestAuthorizationIfNeeded() } }
         }
         .onChange(of: store.liveActivitiesEnabled) { store.savePreferences() }
+        .task { await refreshNotificationStatus() }
+    }
+
+    private var notificationStatusLabel: String {
+        switch notificationStatus {
+        case .authorized, .provisional, .ephemeral: "已开启"
+        case .denied: "已关闭"
+        case .notDetermined: "尚未请求"
+        default: "检查中"
+        }
+    }
+
+    private func refreshNotificationStatus() async {
+        notificationStatus = await UNUserNotificationCenter.current().notificationSettings().authorizationStatus
+    }
+
+    private func sendTestNotification() {
+        Task {
+            await TaskNotifications.shared.requestAuthorizationIfNeeded()
+            await refreshNotificationStatus()
+            await TaskNotifications.shared.post(TaskNotificationEvent(
+                kind: .completed, sessionID: "settings-test",
+                title: "Zcode 测试通知", body: "通知已开启，任务完成时会像这样提醒。"))
+        }
     }
 }
 

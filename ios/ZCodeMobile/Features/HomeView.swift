@@ -71,6 +71,10 @@ struct HomeView: View {
                     result.append(HomeSection(id: key, device: device, workspace: workspace,
                                               projectName: name, projectKey: key, sessions: items))
                 }
+                if grouped.isEmpty, search.isEmpty {
+                    result.append(HomeSection(id: workspace.id + "|empty", device: device, workspace: workspace,
+                                              projectName: workspace.title, projectKey: workspace.id, sessions: []))
+                }
             }
         }
         return result.sorted { lhs, rhs in
@@ -255,6 +259,11 @@ struct HomeView: View {
                     deviceChip(title: device.name, symbol: "desktopcomputer", selected: selectedDeviceID == device.id,
                                dot: device.isActive ? statusColorFor(device) : nil) {
                         selectedDeviceID = device.id
+                        if !device.isActive, let profile = preferredProfile(for: device) {
+                            Task { await store.switchComputer(profile, confirmedControllerReplacement: true) }
+                        } else if device.isActive, !store.connection.isOnline {
+                            Task { await store.retryConnectionNow() }
+                        }
                     }
                 }
                 Button { store.sheet = .connections } label: {
@@ -370,8 +379,14 @@ struct HomeView: View {
                 ForEach(visibleSections) { section in
                     sectionHeader(section, first: section.id == firstID)
                     if !collapsed.contains(section.id) {
-                        ForEach(orderedSessions(section.sessions)) { session in
-                            sessionRow(session, section: section)
+                        if section.sessions.isEmpty {
+                            Text("暂无任务")
+                                .font(.system(size: 13)).foregroundStyle(.tertiary)
+                                .padding(.bottom, 14)
+                        } else {
+                            ForEach(orderedSessions(section.sessions)) { session in
+                                sessionRow(session, section: section)
+                            }
                         }
                     }
                 }
@@ -459,6 +474,18 @@ struct HomeView: View {
             }
             Text("\(section.sessions.count)")
                 .font(.system(size: 12, weight: .medium)).foregroundStyle(.tertiary)
+            if !section.workspace.isActive {
+                Button {
+                    Task { await store.switchComputer(section.workspace.profile, confirmedControllerReplacement: true) }
+                } label: {
+                    Image(systemName: "chevron.right")
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundStyle(.tertiary)
+                        .frame(width: 22, height: 28)
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("打开 \(section.projectName)")
+            }
         }
         .padding(.top, first ? 4 : 26).padding(.bottom, 10)
     }

@@ -283,10 +283,19 @@ struct QueuedInput: Decodable, Sendable, Identifiable, Equatable {
     var transferPending: Bool? = nil
 }
 
+struct BridgeSlashCommand: Decodable, Sendable, Identifiable, Equatable {
+    var name: String
+    var description: String
+    var inputHint: String?
+    var source: String?
+    var id: String { name }
+}
+
 struct BridgeDetail: Decodable, Sendable {
     var session: BridgeSession
     var messages: [BridgeMessage]
     var pendingInteractions: [PendingInteraction]
+    var slashCommands: [BridgeSlashCommand]? = nil
     var hostActivity: JSONValue?
     var contextUsage: ContextUsage? = nil
     var history: ConversationHistory? = nil

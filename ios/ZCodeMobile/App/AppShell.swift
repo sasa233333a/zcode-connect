@@ -55,6 +55,9 @@ struct AppShell: View {
                 guard let store else { return }
                 Self.syncLiveActivity(for: store)
             }
+            store.activityEndSink = {
+                TaskActivityManager.shared.endImmediately()
+            }
             await store.start()
             syncLiveActivity()
             #if DEBUG
