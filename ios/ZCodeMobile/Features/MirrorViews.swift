@@ -235,7 +235,7 @@ struct MirrorCanvas: View {
         let x = (point.x - origin.x) / visible.width
         let y = (point.y - origin.y) / visible.height
         guard (0...1).contains(x), (0...1).contains(y) else { return nil }
-        return (x, y)
+        return (x: Double(x), y: Double(y))
     }
 }
 

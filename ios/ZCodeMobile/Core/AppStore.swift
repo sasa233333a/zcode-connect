@@ -2,6 +2,22 @@ import Foundation
 import Observation
 import UIKit
 
+#if DEBUG
+/// Debug-only file logger so an automated simulator run can report progress
+/// without a console attachment. The simulator can write to the host filesystem.
+enum RelayTestLog {
+    static func write(_ text: String) {
+        let url = URL(fileURLWithPath: "/tmp/relaytest/state.log")
+        if !FileManager.default.fileExists(atPath: url.path) { FileManager.default.createFile(atPath: url.path, contents: nil) }
+        if let handle = try? FileHandle(forWritingTo: url) {
+            handle.seekToEndOfFile()
+            try? handle.write(contentsOf: Data(((Date().formatted(.dateTime.hour().minute().second())) + " " + text + "\n").utf8))
+            try? handle.close()
+        }
+    }
+}
+#endif
+
 @MainActor @Observable
 final class AppStore {
     var path: [AppRoute] = []
@@ -162,6 +178,7 @@ final class AppStore {
     @ObservationIgnored private var refreshRequest = UUID()
 
     var relayWorkspaces: [RelayWorkspace] = []
+    var relayAccount: RelayAccount?
     private(set) var relayWorkspaceSelection: RelayWorkspaceSelectionContext?
     @ObservationIgnored private var relaySelectionOperation: UUID?
     @ObservationIgnored private var relayClient: RelayClient?
@@ -204,6 +221,7 @@ final class AppStore {
         pinnedIDs = Set(defaults.stringArray(forKey: scopedKey("pins")) ?? [])
         archivedIDs = Set(defaults.stringArray(forKey: scopedKey("archives")) ?? [])
         appearance = defaults.string(forKey: "appearance") ?? "跟随系统"
+        relayAccount = RelayAccountService.storedAccount()
         hapticsEnabled = defaults.object(forKey: "haptics") as? Bool ?? true
         showContextUsage = defaults.object(forKey: "showContextUsage") as? Bool ?? true
         showTimestamps = defaults.object(forKey: "timestamps") as? Bool ?? true
@@ -473,14 +491,118 @@ final class AppStore {
             return
         }
         #endif
+        #if DEBUG
+        if let path = relayTestAccountFilePath() { await importRelayTestAccount(path: path) }
+        if let (pairURL, shouldOpen) = relayTestArguments() {
+            await runRelayTestPairing(url: pairURL, openFirstTask: shouldOpen)
+            return
+        }
+        #endif
         await restoreSavedConnection()
     }
+
+    #if DEBUG
+    /// Imports a RelayAccount from a local file (then deletes the file) so a
+    /// simulator run can pair without typing account credentials. Debug only.
+    private func relayTestAccountFilePath() -> String? {
+        let arguments = ProcessInfo.processInfo.arguments
+        guard let index = arguments.firstIndex(of: "--relay-test-account-file"), arguments.count > index + 1,
+              !arguments[index + 1].hasPrefix("-") else { return nil }
+        return arguments[index + 1]
+    }
+
+    private func importRelayTestAccount(path: String) async {
+        let url = URL(fileURLWithPath: path)
+        func note(_ text: String) {
+            let log = URL(fileURLWithPath: "/tmp/relaytest/import-debug.log")
+            if !FileManager.default.fileExists(atPath: log.path) { FileManager.default.createFile(atPath: log.path, contents: nil) }
+            if let handle = try? FileHandle(forWritingTo: log) {
+                handle.seekToEndOfFile(); try? handle.write(contentsOf: Data((text + "\n").utf8)); try? handle.close()
+            }
+        }
+        note("import begin \(path)")
+        defer { try? FileManager.default.removeItem(at: url) }
+        let data: Data
+        do { data = try Data(contentsOf: url) } catch { RelayTestLog.write("read failed \(error)"); errorMessage = "relay-test: 账号文件读取失败"; return }
+        RelayTestLog.write("read ok bytes=\(data.count)")
+        let account: RelayAccount
+        do { account = try JSONDecoder().decode(RelayAccount.self, from: data) } catch { RelayTestLog.write("decode failed \(error)"); errorMessage = "relay-test: 账号文件解析失败"; return }
+        RelayTestLog.write("decode ok user=\(account.userID) jwt=\(account.jwt.count)")
+        do {
+            try RelayAccountService.store(account)
+            relayAccount = account
+            RelayTestLog.write("store ok")
+        } catch {
+            RelayTestLog.write("store failed \(error)")
+            await RelayAccountService.shared.adoptInMemory(account)
+            relayAccount = account
+        }
+    }
+
+    /// Simulator-only UI automation: `--relay-test-pair <link>` pairs without the
+    /// scanner, and `--relay-test-open` pushes the first task once it loads. Used
+    /// for end-to-end verification where no tap backend is available.
+    private func relayTestArguments() -> (pair: String, open: Bool)? {
+        let arguments = ProcessInfo.processInfo.arguments
+        guard let index = arguments.firstIndex(of: "--relay-test-pair"), arguments.count > index + 1,
+              !arguments[index + 1].hasPrefix("-") else { return nil }
+        return (arguments[index + 1], arguments.contains("--relay-test-open"))
+    }
+
+    @ObservationIgnored private var relayTestDidOpen = false
+
+    private func runRelayTestPairing(url: String, openFirstTask: Bool) async {
+        guard relayAccount != nil else {
+            RelayTestLog.write("pair fail: no account")
+            errorMessage = "relay-test: 需要先注入测试账号（钥匙串）"
+            return
+        }
+        do {
+            RelayTestLog.write("pair begin")
+            RelayTestLog.write("candidates " + relayWorkspaces.map { "\($0.canAttach ? "1" : "0"):\(( $0.workspacePath as NSString).lastPathComponent)" }.joined(separator: ", "))
+            let context = try await beginRelayPairing(url, confirmedControllerReplacement: true)
+            RelayTestLog.write("filled " + relayWorkspaces.map { "\($0.canAttach ? "1" : "0"):\(($0.workspacePath as NSString).lastPathComponent)" }.joined(separator: ", "))
+            RelayTestLog.write("match " + relayWorkspaces.map { $0.workspacePath.contains("zocode connect") ? "1" : "0" }.joined(separator: ","))
+            let workspace = relayWorkspaces.first(where: { $0.workspacePath.contains("zocode connect") })
+                ?? (relayWorkspaces.count > 1 ? relayWorkspaces[1] : nil)
+                ?? relayWorkspaces.first(where: { $0.canAttach }) ?? relayWorkspaces.first
+            guard let workspace else { throw BridgeFailure(message: "relay-test: 没有可连接的项目", code: "relay_test_no_workspace") }
+            RelayTestLog.write("workspace \((workspace.workspacePath as NSString).lastPathComponent)")
+            try await completeRelayPairing(workspaceKey: workspace.id, name: "", context: context)
+            RelayTestLog.write("connected sessions=\(sessions.count) online=\(connection.isOnline)")
+            if openFirstTask { await relayTestOpenFirstTask() }
+        } catch {
+            let failure = error as? RelayFailure
+            let bridge = error as? BridgeFailure
+            RelayTestLog.write("pair error [\(failure?.code ?? bridge?.code ?? "error")] \(failure?.message ?? error.localizedDescription)")
+            if !(error is CancellationError) { errorMessage = "relay-test: \(error.localizedDescription)" }
+        }
+    }
+
+    private func relayTestOpenFirstTask() async {
+        for _ in 0..<150 {
+            if relayTestDidOpen { return }
+            let preferred = sessions.first(where: { SessionStatus.running == $0.status || $0.status == .waiting })
+                ?? sessions.first(where: { $0.status == .idle })
+                ?? sessions.first
+            if let first = preferred {
+                relayTestDidOpen = true
+                path = [.session(first.id)]
+                RelayTestLog.write("opened task \(first.id)")
+                return
+            }
+            if case .failed = connection { return }
+            try? await Task.sleep(for: .milliseconds(200))
+        }
+    }
+    #endif
 
     func applicationDidBecomeActive() async {
         let wasActive = isApplicationActive
         isApplicationActive = true
         if !wasActive { automaticConnectionAttempt = 0 }
         guard !isReferenceMode else { return }
+        refreshRelayAccountIfChanged()
         if let task = automaticConnectionTask { await task.value; return }
         if connection.isOnline, client != nil {
             if indexWatchTask == nil { startIndexWatch() }
@@ -758,6 +880,9 @@ final class AppStore {
               (profile.relayServiceID ?? RelayPairing.legacyServiceID(profileURL: profile.baseURL)) == pairing.serviceID else {
             throw BridgeFailure(message: "保存的连接与配对服务不一致，请重新添加连接。", code: "relay_profile_mismatch")
         }
+        if pairing.isLegacyOfficial {
+            throw BridgeFailure(message: "这个连接来自旧版 ZCode。请在电脑上重新开启远程控制，扫描新的二维码。", code: "relay_legacy_pairing")
+        }
         let context = try await pairRelay(raw, confirmedControllerReplacement: true, attempt: UUID(), reportFailure: reportFailure, pairing: pairing)
         guard !Task.isCancelled, isCurrentRelaySelection(context) else { throw CancellationError() }
         if !relayWorkspaces.contains(where: { $0.id == workspace && $0.canAttach }) {
@@ -832,15 +957,28 @@ final class AppStore {
     func beginRelayPairing(_ raw: String, confirmedControllerReplacement: Bool, attempt: UUID = UUID(), reportFailure: Bool = false) async throws -> RelayWorkspaceSelectionContext {
         let pairing = try RelayPairing(payload: raw)
         guard confirmedControllerReplacement else { throw BridgeFailure(message: "请先确认连接这台电脑。", code: "controller_confirmation_required") }
+        // Validate before touching the current connection: a missing login or a
+        // legacy QR must never tear down an already working computer.
+        try validate(pairing: pairing)
         guard !Task.isCancelled else { throw CancellationError() }
         disconnect()
         return try await pairRelay(raw, confirmedControllerReplacement: confirmedControllerReplacement, attempt: attempt, reportFailure: reportFailure, pairing: pairing)
+    }
+
+    private func validate(pairing: RelayPairing) throws {
+        if pairing.requiresAccountToken, relayAccount == nil {
+            throw BridgeFailure(message: "请先登录 ZCode 账号。手机和电脑需要登录同一账号，再扫描连接二维码。", code: "account_login_required")
+        }
+        if pairing.isLegacyOfficial {
+            throw BridgeFailure(message: "这个连接码来自旧版 ZCode。请在电脑上重新开启远程控制并扫描新的二维码。", code: "relay_legacy_pairing")
+        }
     }
 
     private func pairRelay(_ raw: String, confirmedControllerReplacement: Bool, attempt: UUID,
                            reportFailure: Bool, pairing parsed: RelayPairing? = nil) async throws -> RelayWorkspaceSelectionContext {
         let pairing = try parsed ?? RelayPairing(payload: raw)
         guard confirmedControllerReplacement else { throw BridgeFailure(message: "请先确认连接这台电脑。", code: "controller_confirmation_required") }
+        try validate(pairing: pairing)
         guard !Task.isCancelled else { throw CancellationError() }
         tearDownConnection()
         relayConnectionAttempt = attempt
@@ -939,6 +1077,26 @@ final class AppStore {
 
     func cancelRelayPairing(attempt: UUID) {
         if relayConnectionAttempt == attempt { disconnect() }
+    }
+
+    func setRelayAccount(_ account: RelayAccount?) {
+        relayAccount = account
+    }
+
+    func signOutRelayAccount() {
+        RelayAccountService.clear()
+        relayAccount = nil
+    }
+
+    func refreshRelayAccount() {
+        relayAccount = RelayAccountService.storedAccount()
+    }
+
+    /// Returning to the foreground is a cheap moment to notice a token obtained
+    /// in another process or a profile imported while the app was suspended.
+    func refreshRelayAccountIfChanged() {
+        let stored = RelayAccountService.storedAccount()
+        if stored?.jwt != relayAccount?.jwt { relayAccount = stored }
     }
 
     static func validatedURL(_ text: String) -> URL? {

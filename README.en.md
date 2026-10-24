@@ -29,8 +29,9 @@ The App supports Simplified Chinese, English, Japanese, French, Korean, and Germ
 
 1. Install the App from the [App Store](https://apps.apple.com/app/id6820455082). Requires **iOS / iPadOS 26 or later**.
 2. Set up [ZCode](https://zcode.z.ai/) on your computer. Use a desktop version that supports remote connections and open its remote connection entry.
-3. Scan the pairing code or paste the complete pairing information on your phone. Check the computer and relay address, then confirm.
-4. Choose a project, open a task, and carry on.
+3. Sign in to the same ZCode account on the App and on the computer (Z.ai or BigModel).
+4. Scan the pairing code or paste the complete pairing information on your phone. Check the computer and relay address, then confirm.
+5. Choose a project, open a task, and carry on.
 
 **Your computer must stay awake and online, with ZCode running.** The App is free; your chosen model providers or third-party services may charge separately. Keep pairing codes and links private: they contain connection credentials.
 

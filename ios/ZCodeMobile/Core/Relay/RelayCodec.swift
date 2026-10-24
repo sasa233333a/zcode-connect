@@ -11,7 +11,11 @@ public indirect enum RelayIPCValue: Sendable, Equatable {
         case .string(let v): return .string(v)
         case .int32(let v): return .number(Double(v))
         case .array(let v): return .array(try v.map { try $0.jsonValue() })
-        case .json(let v): return try RelayJSON(data: v)
+        case .json(let v):
+            // The desktop encodes an undefined listener response as an empty JSON
+            // payload; treat it as null instead of failing the whole connection.
+            if v.isEmpty { return .null }
+            return try RelayJSON(data: v)
         case .bytes(let v), .vsBuffer(let v): return .object(["__zcode_rpc_nested_uint8array_v1": .bool(true), "base64": .string(v.base64EncodedString())])
         }
     }
@@ -100,6 +104,8 @@ public enum RelayIPCCodec {
             if tag == 2 { return .bytes(payload) }; if tag == 3 { return .vsBuffer(payload) }
             guard let text = String(data: payload, encoding: .utf8) else { throw RelayFailure.invalid("Invalid IPC UTF-8.") }
             if tag == 1 { return .string(text) }
+            // An empty JSON payload means "no value"; jsonValue() maps it to null.
+            if payload.isEmpty { return .json(payload) }
             _ = try RelayJSON(data: payload); return .json(payload)
         }
     }

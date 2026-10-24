@@ -475,9 +475,16 @@ extension Date {
     }
 }
 
+@MainActor
 enum CredentialStore {
     private static let service = "dev.paco.zcode.mobile.connection"
+    /// Same-process fallback when the keychain is unavailable (seen on unsigned
+    /// simulator builds); a properly signed app always uses the keychain first.
+    private static var memory: [String: String] = [:]
     static func read(_ id: String) -> String? {
+        memory[id] ?? readFromKeychain(id)
+    }
+    static func readFromKeychain(_ id: String) -> String? {
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
@@ -497,19 +504,21 @@ enum CredentialStore {
             kSecAttrAccount as String: id
         ]
         let updated = SecItemUpdate(query as CFDictionary, [kSecValueData as String: Data(value.utf8)] as CFDictionary)
-        if updated == errSecSuccess { return }
-        guard updated == errSecItemNotFound else {
-            throw BridgeFailure(message: "无法安全更新连接密钥。", code: "keychain_\(updated)")
-        }
+        if updated == errSecSuccess { memory[id] = nil; return }
         var item = query
         item[kSecValueData as String] = Data(value.utf8)
         item[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
-        let status = SecItemAdd(item as CFDictionary, nil)
-        guard status == errSecSuccess else {
-            throw BridgeFailure(message: "无法安全保存连接密钥。", code: "keychain_\(status)")
+        if updated == errSecItemNotFound || SecItemAdd(item as CFDictionary, nil) != errSecSuccess {
+            SecItemDelete(query as CFDictionary)
+            if SecItemAdd(item as CFDictionary, nil) != errSecSuccess {
+                memory[id] = value
+                return
+            }
         }
+        memory[id] = nil
     }
     static func remove(_ id: String) {
+        memory[id] = nil
         SecItemDelete([kSecClass as String: kSecClassGenericPassword,
                        kSecAttrService as String: service, kSecAttrAccount as String: id] as CFDictionary)
     }

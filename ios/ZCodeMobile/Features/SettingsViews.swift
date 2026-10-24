@@ -44,6 +44,14 @@ struct SettingsView: View {
                 NavigationLink { PairingView(embedded: true) } label: { Label("添加连接", systemImage: "plus") }
                 NavigationLink { ConnectionGuideView() } label: { Label("手机与电脑连接指南", systemImage: "questionmark.circle") }
             }
+            Section("ZCode 账号") {
+                if let account = store.relayAccount {
+                    LabeledContent("账号", value: account.name)
+                    Button("退出登录", role: .destructive) { store.signOutRelayAccount() }
+                } else {
+                    NavigationLink { RelayLoginView() } label: { Label("登录账号", systemImage: "person.crop.circle") }
+                }
+            }
             Section("关于") {
                 LabeledContent("ZCode Mobile", value: "1.0")
                 Text("使用原生 SwiftUI 与 Apple Liquid Glass 构建。")
