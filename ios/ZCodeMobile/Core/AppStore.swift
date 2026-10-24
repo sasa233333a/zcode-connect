@@ -475,8 +475,59 @@ final class AppStore {
             return
         }
         #endif
+        #if DEBUG
+        if let (pairURL, shouldOpen) = relayTestArguments() {
+            await runRelayTestPairing(url: pairURL, openFirstTask: shouldOpen)
+            return
+        }
+        #endif
         await restoreSavedConnection()
     }
+
+    #if DEBUG
+    /// Simulator-only UI automation: `--relay-test-pair <link>` pairs without the
+    /// scanner, and `--relay-test-open` pushes the first task once it loads. Used
+    /// for end-to-end verification where no tap backend is available.
+    private func relayTestArguments() -> (pair: String, open: Bool)? {
+        let arguments = ProcessInfo.processInfo.arguments
+        guard let index = arguments.firstIndex(of: "--relay-test-pair"), arguments.count > index + 1,
+              !arguments[index + 1].hasPrefix("-") else { return nil }
+        return (arguments[index + 1], arguments.contains("--relay-test-open"))
+    }
+
+    @ObservationIgnored private var relayTestDidOpen = false
+
+    private func runRelayTestPairing(url: String, openFirstTask: Bool) async {
+        guard relayAccount != nil else {
+            errorMessage = "relay-test: 需要先注入测试账号（钥匙串）"
+            return
+        }
+        do {
+            let context = try await beginRelayPairing(url, confirmedControllerReplacement: true)
+            let workspace = relayWorkspaces.first(where: \.canAttach) ?? relayWorkspaces.first
+            guard let workspace else { throw BridgeFailure(message: "relay-test: 没有可连接的项目", code: "relay_test_no_workspace") }
+            try await completeRelayPairing(workspaceKey: workspace.id, name: "", context: context)
+            print("relay-test: connected, sessions=\(sessions.count)")
+            if openFirstTask { await relayTestOpenFirstTask() }
+        } catch {
+            if !(error is CancellationError) { errorMessage = "relay-test: \(error.localizedDescription)" }
+        }
+    }
+
+    private func relayTestOpenFirstTask() async {
+        for _ in 0..<150 {
+            if relayTestDidOpen { return }
+            if let first = sessions.first {
+                relayTestDidOpen = true
+                path = [.session(first.id)]
+                print("relay-test: opened \(first.id)")
+                return
+            }
+            if case .failed = connection { return }
+            try? await Task.sleep(for: .milliseconds(200))
+        }
+    }
+    #endif
 
     func applicationDidBecomeActive() async {
         let wasActive = isApplicationActive
