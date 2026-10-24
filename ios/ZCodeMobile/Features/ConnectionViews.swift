@@ -10,26 +10,31 @@ struct ConnectionsView: View {
         NavigationStack {
             List {
                 Section("我的电脑") {
-                    ForEach(store.profiles) { profile in
-                        Button {
-                            if profile.isRelay && !(store.activeProfile == profile && store.connection.isOnline && !store.isReferenceMode) { relayReconnect = profile }
-                            else { dismiss(); Task { await store.switchComputer(profile) } }
-                        } label: {
-                            HStack {
-                                Image(systemName: "laptopcomputer")
-                                VStack(alignment: .leading) {
-                                    Text(profile.name).foregroundStyle(.primary)
-                                    Text(profile.isRelay ? "\(profile.relayServiceLabel) · \(profile.relayWorkspaceKey?.split(separator: "/").last.map(String.init) ?? "项目")" : profile.baseURL).font(.caption).foregroundStyle(.secondary)
+                    ForEach(store.homeDeviceGroups) { device in
+                        if let profile = preferredProfile(for: device) {
+                            Button {
+                                if profile.isRelay && !(device.isActive && store.connection.isOnline && !store.isReferenceMode) {
+                                    relayReconnect = profile
+                                } else {
+                                    dismiss(); Task { await store.switchComputer(profile) }
                                 }
-                                Spacer()
-                                if profile.id == store.activeProfileID {
-                                    Circle().fill(store.connection.isOnline ? .green : .gray).frame(width: 8, height: 8)
+                            } label: {
+                                HStack {
+                                    Image(systemName: "laptopcomputer")
+                                    VStack(alignment: .leading) {
+                                        Text(device.name).foregroundStyle(.primary)
+                                        Text(deviceSubtitle(device)).font(.caption).foregroundStyle(.secondary)
+                                    }
+                                    Spacer()
+                                    if device.isActive {
+                                        Circle().fill(store.connection.isOnline ? .green : .gray).frame(width: 8, height: 8)
+                                    }
                                 }
                             }
                         }
                     }
                     NavigationLink { PairingView(embedded: true) } label: {
-                        Label("添加连接", systemImage: "plus")
+                        Label("添加电脑", systemImage: "plus")
                     }
                 }
 
@@ -45,6 +50,20 @@ struct ConnectionsView: View {
             }
             Button("取消", role: .cancel) { relayReconnect = nil }
         } message: { Text("如果另一台手机正在控制这台电脑，此次连接可能替换它。电脑上的任务会保留。") }
+    }
+
+    private func preferredProfile(for device: HomeDeviceGroup) -> ConnectionProfile? {
+        device.workspaces.first(where: \.isActive)?.profile
+            ?? device.workspaces.first(where: { !$0.sessions.isEmpty })?.profile
+            ?? device.workspaces.first?.profile
+    }
+
+    private func deviceSubtitle(_ device: HomeDeviceGroup) -> String {
+        let count = device.workspaces.count
+        if let current = device.workspaces.first(where: \.isActive)?.title {
+            return "\(count) 个项目 · 当前 \(current)"
+        }
+        return "\(count) 个项目"
     }
 }
 
@@ -84,8 +103,15 @@ struct PairingView: View {
         .confirmationDialog("连接这台电脑？", isPresented: $confirmRelay, titleVisibility: .visible) {
             Button("连接并使用此手机控制") { Task { await connectRelay() } }
             Button("取消", role: .cancel) {}
-        } message: { Text(relayServiceHost.map { "将通过自建中转 \($0) 连接电脑，可能替换另一台手机的控制连接。确认后由你选择项目。" } ?? "连接 ZCode 远程可能替换另一台手机的控制连接。确认后将读取电脑上的项目，由你选择要打开的项目。") }
+        } message: { Text(relayServiceHost.map { "将通过自建中转 \($0) 连接电脑，可能替换另一台手机的控制连接。确认后会打开电脑当前的项目。" } ?? "连接 ZCode 远程可能替换另一台手机的控制连接。确认后会自动打开电脑当前的项目。") }
         .onAppear { isVisible = true; restoreWorkspaceSelection() }
+        .task {
+            if store.relayAccount != nil { await store.refreshDiscoveredDevices() }
+        }
+        .onChange(of: store.relayAccount?.userID) { _, userID in
+            if userID != nil { Task { await store.refreshDiscoveredDevices() } }
+            else { store.discoveredDevices = [] }
+        }
         .onChange(of: store.relayWorkspaceSelection?.id) { _, _ in restoreWorkspaceSelection() }
         .onDisappear {
             isVisible = false
@@ -114,7 +140,7 @@ struct PairingView: View {
                     Image(systemName: "laptopcomputer.and.iphone").font(.system(size: 42, weight: .light))
                         .foregroundStyle(ZTheme.accent).padding(.vertical, 8)
                     Text("连接你的电脑").font(.title2.weight(.semibold))
-                    Text(choosingWorkspace ? (selectionContext?.reason.isEmpty == false ? selectionContext!.reason : "已连接这台电脑，请选择要继续的项目。") : onboarding ? "先连接一台电脑，再查看和继续你的任务。电脑需要保持运行和联网。" : "在电脑的 ZCode 左下角点击手机图标，开启远程控制，然后扫描或粘贴连接链接。")
+                    Text(choosingWorkspace ? (selectionContext?.reason.isEmpty == false ? selectionContext!.reason : "已连接这台电脑，请选择要继续的项目。") : onboarding ? "登录同一账号后会自动发现在线的电脑，连接后直接进入项目和对话。电脑需要保持运行和联网。" : "登录同一账号后会自动发现在线的电脑，不需要扫码；也可以使用下方的二维码或自建中转。")
                         .font(.subheadline).foregroundStyle(.secondary)
                 }.listRowBackground(Color.clear)
             }
@@ -126,10 +152,56 @@ struct PairingView: View {
                     Button { activeSheet = .login } label: {
                         Label("登录账号", systemImage: "person.crop.circle")
                     }
-                    Text("手机和电脑需要登录同一账号（Z.ai 或 BigModel）。登录后再扫描电脑上的连接二维码。")
+                    Text("手机和电脑需要登录同一账号（Z.ai 或 BigModel）。登录后会自动发现同一账号下在线的电脑。")
                         .font(.footnote).foregroundStyle(.secondary)
                 }
             } }
+            if !choosingWorkspace, store.relayAccount != nil {
+                Section {
+                    if store.isDiscoveringDevices {
+                        HStack(spacing: 12) {
+                            ProgressView().controlSize(.small)
+                            Text("正在查找在线的电脑…").foregroundStyle(.secondary)
+                        }
+                    } else if store.discoveredDevices.isEmpty {
+                        Text(store.discoveryError ?? "没有发现在线电脑。请确认电脑上的 ZCode 正在运行并开启远程控制。")
+                            .font(.footnote).foregroundStyle(.secondary)
+                    } else {
+                        ForEach(store.discoveredDevices) { device in
+                            Button {
+                                Task { await connectDiscovered(device) }
+                            } label: {
+                                HStack(spacing: 12) {
+                                    Image(systemName: "desktopcomputer")
+                                        .font(.system(size: 20, weight: .medium))
+                                        .foregroundStyle(ZTheme.accent)
+                                        .frame(width: 30)
+                                    VStack(alignment: .leading, spacing: 3) {
+                                        Text(device.name).foregroundStyle(.primary)
+                                        Text("在线 · ZCode \(device.version)")
+                                            .font(.caption).foregroundStyle(.secondary)
+                                    }
+                                    Spacer()
+                                    if connecting { ProgressView().controlSize(.small) }
+                                    else { Text("连接").font(.caption.weight(.semibold)).foregroundStyle(ZTheme.accent) }
+                                }
+                            }
+                            .disabled(connecting)
+                            .accessibilityIdentifier("pairing.device.\(device.id)")
+                        }
+                    }
+                    Button {
+                        Task { await store.refreshDiscoveredDevices() }
+                    } label: {
+                        Label(store.isDiscoveringDevices ? "正在刷新…" : "刷新发现的电脑", systemImage: "arrow.clockwise")
+                    }
+                    .disabled(connecting || store.isDiscoveringDevices)
+                } header: {
+                    Text("已发现的电脑")
+                } footer: {
+                    Text("连接后会自动打开这台电脑当前的项目；其他项目和对话可以在首页切换，不需要重新配对。")
+                }
+            }
             if !choosingWorkspace { Section {
                 Button { activeSheet = .scanner } label: {
                     Label("扫描连接二维码", systemImage: "qrcode.viewfinder")
@@ -273,8 +345,40 @@ struct PairingView: View {
         selectionContext = nil
         connecting = true; failure = nil; beganRelay = true
         do {
-            let context = try await store.beginRelayPairing(raw, confirmedControllerReplacement: true, attempt: attempt)
+            let context = try await store.beginRelayPairing(raw, confirmedControllerReplacement: true,
+                                                            attempt: attempt, autoSelectWorkspace: true)
             guard isVisible, relayAttempt == attempt, store.isCurrentRelaySelection(context) else { return }
+            if store.connection.isOnline {
+                store.sheet = nil; dismiss(); return
+            }
+            selectionContext = context
+            choosingWorkspace = true
+        } catch {
+            if relayAttempt == attempt, !(error is CancellationError) {
+                let code = (error as? BridgeFailure)?.code ?? (error as? RelayFailure)?.code
+                failure = error.localizedDescription
+                if code == "account_login_required" || code == "relay_account_login_required" {
+                    beganRelay = false
+                    activeSheet = .login
+                }
+            }
+        }
+        if relayAttempt == attempt { connecting = false }
+    }
+
+    private func connectDiscovered(_ device: RelayDiscoveredDevice) async {
+        guard isVisible, !connecting else { return }
+        let attempt = UUID(); relayAttempt = attempt
+        selectionContext = nil
+        connecting = true; failure = nil; beganRelay = true
+        do {
+            let raw = try device.pairingPayload()
+            let context = try await store.beginRelayPairing(raw, confirmedControllerReplacement: true,
+                                                            attempt: attempt, autoSelectWorkspace: true)
+            guard isVisible, relayAttempt == attempt, store.isCurrentRelaySelection(context) else { return }
+            if store.connection.isOnline {
+                store.sheet = nil; dismiss(); return
+            }
             selectionContext = context
             choosingWorkspace = true
         } catch {

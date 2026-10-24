@@ -46,10 +46,12 @@ struct SettingsView: View {
                 LabeledContent("电脑", value: store.hostName)
                 LabeledContent("状态", value: store.connection.label)
                 if let version = store.bridgeVersion { LabeledContent("ZCode 版本", value: version) }
-                ForEach(store.profiles) { profile in
-                    NavigationLink(profile.name) { ConnectionDetailView(profile: profile) }
+                ForEach(store.homeDeviceGroups) { device in
+                    if let profile = device.workspaces.first(where: \.isActive)?.profile ?? device.workspaces.first?.profile {
+                        NavigationLink(device.name) { ConnectionDetailView(profile: profile) }
+                    }
                 }
-                NavigationLink { PairingView(embedded: true) } label: { Label("添加连接", systemImage: "plus") }
+                NavigationLink { PairingView(embedded: true) } label: { Label("添加电脑", systemImage: "plus") }
                 NavigationLink { ConnectionGuideView() } label: { Label("手机与电脑连接指南", systemImage: "questionmark.circle") }
             }
             Section("ZCode 账号") {

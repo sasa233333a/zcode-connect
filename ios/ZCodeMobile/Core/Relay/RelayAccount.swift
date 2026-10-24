@@ -51,6 +51,37 @@ public struct RelayAccountTokenProvider: RelayTerminalTokenProviding {
     }
 }
 
+/// A desktop that the signed-in account already owns. Discovery removes the
+/// need to scan a QR when the desktop is online and running remote control.
+public struct RelayDiscoveredDevice: Sendable, Identifiable, Equatable {
+    public let deviceSID: String
+    public let deviceMid: String
+    public let name: String
+    public let version: String
+    public let platform: String?
+    public var id: String { deviceMid }
+
+    public init(deviceSID: String, deviceMid: String, name: String, version: String, platform: String?) {
+        self.deviceSID = deviceSID; self.deviceMid = deviceMid
+        self.name = name; self.version = version; self.platform = platform
+    }
+
+    /// The same payload a current QR carries. It contains no shared secret;
+    /// authentication still comes from the signed-in account's terminal token.
+    public func pairingPayload() throws -> String {
+        var components = URLComponents(string: RelayPairing.officialProfileURL)!
+        components.queryItems = [
+            URLQueryItem(name: "sid", value: deviceSID),
+            URLQueryItem(name: "mid", value: deviceMid),
+            URLQueryItem(name: "name", value: name),
+            URLQueryItem(name: "app_version", value: version)
+        ]
+        guard let url = components.url else { throw RelayFailure("relay_invalid_pairing", "无法生成电脑的连接信息。") }
+        _ = try RelayPairing(scannedURL: url.absoluteString)
+        return url.absoluteString
+    }
+}
+
 public actor RelayAccountService {
     public static let shared = RelayAccountService()
     private let session: URLSession
@@ -161,6 +192,10 @@ public actor RelayAccountService {
         memoryAccount = account
     }
 
+    public func clearInMemory() {
+        memoryAccount = nil
+    }
+
     /// Exchanges the account JWT for a short-lived terminal token. The token is
     /// scoped by the relay to the terminal role and is never persisted.
     public func terminalToken() async throws -> String {
@@ -177,6 +212,47 @@ public actor RelayAccountService {
             throw RelayFailure("relay_account_invalid_response", "中转服务没有返回有效的连接令牌。")
         }
         return value
+    }
+
+    /// Lists desktops already associated with the signed-in account and online
+    /// with remote control enabled. This is the same account-scoped device list
+    /// used by the official QR flow, not a local network scan.
+    public func devices() async throws -> [RelayDiscoveredDevice] {
+        guard let account = Self.storedAccount() ?? memoryAccount else {
+            throw RelayFailure("relay_account_login_required", "请先登录 ZCode 账号。手机和电脑需要登录同一账号。")
+        }
+        guard Self.validCredential(account.jwt) else {
+            throw RelayFailure("relay_account_login_required", "登录信息已失效，请重新登录 ZCode 账号。")
+        }
+        struct Device: Decodable {
+            struct Meta: Decodable {
+                let platform: String?
+                let name: String?
+                let version: String?
+            }
+            let deviceSid: String?
+            let deviceMid: String?
+            let online: Bool?
+            let meta: Meta?
+        }
+        let envelope: Envelope<[Device]> = try await request(path: "/api/v1/remote/device", method: "GET",
+                                                            body: nil, bearer: account.jwt)
+        guard envelope.code == 0, let values = envelope.data else {
+            throw RelayFailure("relay_account_invalid_response", "账号服务没有返回可用的电脑列表。")
+        }
+        var seen = Set<String>()
+        return values.compactMap { device -> RelayDiscoveredDevice? in
+            guard device.online == true,
+                  let sid = device.deviceSid?.trimmingCharacters(in: .whitespacesAndNewlines), !sid.isEmpty,
+                  let mid = device.deviceMid?.trimmingCharacters(in: .whitespacesAndNewlines), !mid.isEmpty,
+                  seen.insert(mid).inserted else { return nil }
+            let name = device.meta?.name?.trimmingCharacters(in: .whitespacesAndNewlines)
+            let version = device.meta?.version?.trimmingCharacters(in: .whitespacesAndNewlines)
+            return RelayDiscoveredDevice(deviceSID: sid, deviceMid: mid,
+                                         name: (name?.isEmpty == false ? name! : "电脑"),
+                                         version: (version?.isEmpty == false ? version! : "3.16.3"),
+                                         platform: device.meta?.platform)
+        }.sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
     }
 
     private struct Envelope<T: Decodable>: Decodable {

@@ -17,7 +17,8 @@ It is an independently developed native iOS client with a Liquid Glass interface
 ## What you can do
 
 - **Pick up existing work**: open projects and tasks, continue conversations, and read replies and execution steps.
-- **Browse by computer and project**: switch computers at the top and see conversations grouped by project below. Other projects keep their last synced content and reconnect when opened.
+- **Connect to a computer once**: sign in and the App discovers computers already online on the same account, with no QR or per-project setup. You land directly in projects and conversations.
+- **Browse by project**: conversations are grouped by project; opening a conversation in another project switches the workspace in the background without reconnecting or re-pairing.
 - **Automatic reconnection**: retry after network changes, returning to the foreground, or a brief relay interruption, with a manual retry in the banner.
 - **Notifications and Dynamic Island**: get notified when a task completes, waits for approval, or fails, and see the active task on the Dynamic Island and Lock Screen.
 - **Follow your agents**: view sub-agent progress and conversations as a task moves forward.

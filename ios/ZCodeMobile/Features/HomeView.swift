@@ -5,13 +5,12 @@ struct HomeView: View {
     @State private var search = ""
     @State private var collapsed: Set<String> = []
     @State private var selectedDeviceID: String?
-    @State private var selectedProjectKey: String?
     @State private var renameSession: RemoteSession?
     @State private var renameText = ""
     @State private var renameScope: String?
     @State private var confirmRelayReconnect = false
     @State private var connectRequest: ConnectRequest?
-    @State private var pendingOpen: PendingOpen?
+    @State private var switchingSessionID: String?
 
     private struct SessionRowIdentity: Hashable {
         var scope: String
@@ -28,24 +27,9 @@ struct HomeView: View {
         var sessions: [RemoteSession]
     }
 
-    private struct ProjectChip: Identifiable {
-        var id: String
-        var title: String
-        var count: Int
-    }
-
     private struct ConnectRequest: Identifiable {
         let id = UUID()
         var profile: ConnectionProfile
-        var deviceName: String
-        var workspaceTitle: String
-    }
-
-    private struct PendingOpen: Identifiable {
-        let id = UUID()
-        var profile: ConnectionProfile
-        var sessionID: String
-        var title: String
         var deviceName: String
         var workspaceTitle: String
     }
@@ -89,9 +73,6 @@ struct HomeView: View {
                 }
             }
         }
-        if let selectedProjectKey {
-            result = result.filter { $0.projectKey == selectedProjectKey }
-        }
         return result.sorted { lhs, rhs in
             let left = lhs.sessions.map(\.updatedAt).max() ?? .distantPast
             let right = rhs.sessions.map(\.updatedAt).max() ?? .distantPast
@@ -99,32 +80,6 @@ struct HomeView: View {
             return lhs.projectName.localizedStandardCompare(rhs.projectName) == .orderedAscending
         }
     }
-
-    private var projectChips: [ProjectChip] {
-        var seen: Set<String> = []
-        var result: [ProjectChip] = []
-        for device in visibleDevices {
-            for workspace in device.workspaces {
-                let visible = workspace.sessions.filter { $0.isArchived == store.showArchived }
-                let grouped = Dictionary(grouping: visible) { session in
-                    let project = session.projectID.isEmpty ? session.projectName : session.projectID
-                    return workspace.id + "|" + project
-                }
-                for (key, items) in grouped where seen.insert(key).inserted {
-                    let project = workspace.projects.first { $0.id == items.first?.projectID }
-                    result.append(ProjectChip(id: key,
-                                              title: items.first?.projectName ?? project?.name ?? workspace.title,
-                                              count: items.count))
-                }
-            }
-        }
-        return result.sorted {
-            if $0.count != $1.count { return $0.count > $1.count }
-            return $0.title.localizedStandardCompare($1.title) == .orderedAscending
-        }
-    }
-
-    private var projectChipsVisible: Bool { projectChips.count > 1 || selectedProjectKey != nil }
 
     private func orderedSessions(_ sessions: [RemoteSession]) -> [RemoteSession] {
         sessions.sorted { a, b in
@@ -167,7 +122,6 @@ struct HomeView: View {
         VStack(spacing: 0) {
             if !store.isReferenceMode {
                 deviceBar
-                if projectChipsVisible { projectBar }
                 reconnectBanner
             }
             Group {
@@ -189,17 +143,6 @@ struct HomeView: View {
             Button("取消", role: .cancel) { connectRequest = nil }
         } message: {
             Text("连接 \(connectRequest?.deviceName ?? "所选电脑") 的 \(connectRequest?.workspaceTitle ?? "项目")。如果另一台手机正在控制这台电脑，此次连接可能替换它；电脑上的任务会继续运行。")
-        }
-        .confirmationDialog("连接并打开这个任务？", isPresented: Binding(get: { pendingOpen != nil }, set: { if !$0 { pendingOpen = nil } }), titleVisibility: .visible) {
-            Button("连接并打开") {
-                guard let request = pendingOpen else { return }
-                pendingOpen = nil
-                search = ""; collapsed = []
-                Task { await store.switchAndOpen(request.profile, sessionID: request.sessionID) }
-            }
-            Button("取消", role: .cancel) { pendingOpen = nil }
-        } message: {
-            Text("会切换到 \(pendingOpen?.deviceName ?? "这台电脑") 的 \(pendingOpen?.workspaceTitle ?? "项目")，然后打开“\(pendingOpen?.title ?? "任务")”。")
         }
         .confirmationDialog("重新连接 ZCode 远程控制？", isPresented: $confirmRelayReconnect, titleVisibility: .visible) {
             Button("连接这台电脑") {
@@ -264,16 +207,13 @@ struct HomeView: View {
         }
         .onChange(of: connectionScope) { _, _ in
             renameSession = nil; renameScope = nil
-            search = ""; collapsed = []; pendingOpen = nil
+            search = ""; collapsed = []
         }
         .onChange(of: store.sessions.map(\.id)) { _, ids in
             if let id = renameSession?.id, !ids.contains(id) { renameSession = nil; renameScope = nil }
         }
         .onChange(of: store.homeDeviceGroups.map(\.id)) { _, ids in
             if let selectedDeviceID, !ids.contains(selectedDeviceID) { self.selectedDeviceID = nil }
-        }
-        .onChange(of: projectChips.map(\.id)) { _, ids in
-            if let selectedProjectKey, !ids.contains(selectedProjectKey) { self.selectedProjectKey = nil }
         }
         .onChange(of: renameAvailable) { _, available in
             if !available { renameSession = nil; renameScope = nil }
@@ -310,13 +250,11 @@ struct HomeView: View {
                 deviceChip(title: "全部", symbol: "square.grid.2x2", selected: selectedDeviceID == nil,
                            dot: nil) {
                     selectedDeviceID = nil
-                    selectedProjectKey = nil
                 }
                 ForEach(store.homeDeviceGroups) { device in
                     deviceChip(title: device.name, symbol: "desktopcomputer", selected: selectedDeviceID == device.id,
                                dot: device.isActive ? statusColorFor(device) : nil) {
                         selectedDeviceID = device.id
-                        selectedProjectKey = nil
                     }
                 }
                 Button { store.sheet = .connections } label: {
@@ -349,39 +287,6 @@ struct HomeView: View {
             .foregroundStyle(selected ? .primary : .secondary)
             .padding(.horizontal, 13).padding(.vertical, 8)
             .background(selected ? Color.primary.opacity(0.10) : Color.clear, in: Capsule())
-        }
-        .buttonStyle(.plain)
-    }
-
-    private var projectBar: some View {
-        ScrollView(.horizontal, showsIndicators: false) {
-            HStack(spacing: 8) {
-                projectChip(title: "全部项目", selected: selectedProjectKey == nil) {
-                    selectedProjectKey = nil
-                }
-                ForEach(projectChips) { project in
-                    projectChip(title: project.title, count: project.count, selected: selectedProjectKey == project.id) {
-                        selectedProjectKey = project.id
-                    }
-                }
-            }
-            .padding(.horizontal, 20).padding(.bottom, 8)
-        }
-        .accessibilityIdentifier("home.projects")
-    }
-
-    private func projectChip(title: String, count: Int? = nil, selected: Bool, action: @escaping () -> Void) -> some View {
-        Button(action: action) {
-            HStack(spacing: 5) {
-                Image(systemName: "folder").font(.system(size: 11, weight: .medium))
-                Text(title).font(.system(size: 13, weight: .medium)).lineLimit(1)
-                if let count, count > 0 {
-                    Text("\(count)").font(.system(size: 11)).foregroundStyle(.tertiary)
-                }
-            }
-            .foregroundStyle(selected ? .primary : .secondary)
-            .padding(.horizontal, 11).padding(.vertical, 6)
-            .background(selected ? Color.primary.opacity(0.08) : Color.clear, in: Capsule())
         }
         .buttonStyle(.plain)
     }
@@ -548,17 +453,12 @@ struct HomeView: View {
                 }
             }
             Spacer()
+            if !section.workspace.isActive {
+                Image(systemName: "icloud.slash")
+                    .font(.system(size: 11)).foregroundStyle(.tertiary)
+            }
             Text("\(section.sessions.count)")
                 .font(.system(size: 12, weight: .medium)).foregroundStyle(.tertiary)
-            if !section.workspace.isActive {
-                Button("连接") {
-                    connectRequest = ConnectRequest(profile: section.workspace.profile,
-                                                    deviceName: section.device.name,
-                                                    workspaceTitle: section.workspace.title)
-                }
-                .font(.system(size: 12, weight: .semibold))
-                .buttonStyle(.bordered).buttonBorderShape(.capsule).controlSize(.mini)
-            }
         }
         .padding(.top, first ? 4 : 26).padding(.bottom, 10)
     }
@@ -588,7 +488,9 @@ struct HomeView: View {
                     Text("·").font(.system(size: 13))
                     Text(session.updatedAt, style: .relative).font(.system(size: 13)).lineLimit(1)
                     Spacer()
-                    if !active {
+                    if switchingSessionID == session.id {
+                        ProgressView().controlSize(.mini)
+                    } else if !active {
                         Image(systemName: "icloud.slash").font(.system(size: 11)).foregroundStyle(.tertiary)
                     }
                     if session.additions > 0 || session.deletions > 0 {
@@ -619,17 +521,16 @@ struct HomeView: View {
     }
 
     private func open(_ session: RemoteSession, in section: HomeSection) {
-        if section.workspace.isActive {
-            if store.connection.isOnline {
-                store.setUnread(false, sessionID: session.id)
-                store.path.append(.session(session.id))
-            } else {
-                Task { await store.switchAndOpen(section.workspace.profile, sessionID: session.id) }
-            }
-        } else {
-            pendingOpen = PendingOpen(profile: section.workspace.profile, sessionID: session.id,
-                                      title: session.title, deviceName: section.device.name,
-                                      workspaceTitle: section.workspace.title)
+        if section.workspace.isActive, store.connection.isOnline {
+            store.setUnread(false, sessionID: session.id)
+            store.path.append(.session(session.id))
+            return
+        }
+        guard switchingSessionID == nil else { return }
+        switchingSessionID = session.id
+        Task {
+            await store.switchAndOpen(section.workspace.profile, sessionID: session.id)
+            if switchingSessionID == session.id { switchingSessionID = nil }
         }
     }
 
@@ -657,21 +558,23 @@ struct HomeView: View {
         return Menu {
             Section {
                 Menu {
-                    ForEach(store.profiles) { profile in
-                        Button {
-                            if profile.isRelay && !(store.activeProfile == profile && store.connection.isOnline && !store.isReferenceMode) {
-                                connectRequest = ConnectRequest(profile: profile,
-                                                                deviceName: profile.name,
-                                                                workspaceTitle: profile.relayWorkspaceKey?.split(separator: "/").last.map(String.init) ?? profile.baseURL)
-                            } else {
-                                search = ""; collapsed = []
-                                Task { await store.switchComputer(profile) }
+                    ForEach(store.homeDeviceGroups) { device in
+                        if let profile = preferredProfile(for: device) {
+                            Button {
+                                if profile.isRelay && !(device.isActive && store.connection.isOnline && !store.isReferenceMode) {
+                                    connectRequest = ConnectRequest(profile: profile,
+                                                                    deviceName: device.name,
+                                                                    workspaceTitle: device.workspaces.first?.title ?? "项目")
+                                } else {
+                                    search = ""; collapsed = []
+                                    Task { await store.switchComputer(profile) }
+                                }
+                            } label: {
+                                Label(device.name + (device.isActive && !store.isReferenceMode ? " · \(store.connection.label)" : ""),
+                                      systemImage: device.isActive && !store.isReferenceMode ? "checkmark" : "laptopcomputer")
                             }
-                        } label: {
-                            Label(computerLabel(profile) + (store.activeProfileID == profile.id && !store.isReferenceMode ? " · \(store.connection.label)" : ""),
-                                  systemImage: store.activeProfileID == profile.id && !store.isReferenceMode ? "checkmark" : "laptopcomputer")
+                            .accessibilityIdentifier("home.computer.\(device.id)")
                         }
-                        .accessibilityIdentifier("home.computer.\(profile.id)")
                     }
                     if store.profiles.isEmpty { Text("还没有添加电脑") }
                     Divider()
@@ -699,10 +602,10 @@ struct HomeView: View {
         }.tint(.primary).accessibilityLabel("远程菜单").accessibilityIdentifier("home.menu")
     }
 
-    private func computerLabel(_ profile: ConnectionProfile) -> String {
-        guard store.profiles.filter({ $0.name == profile.name }).count > 1 else { return profile.name }
-        let detail = profile.relayWorkspaceKey?.split(separator: "/").last.map(String.init) ?? profile.baseURL
-        return "\(profile.name) · \(detail)"
+    private func preferredProfile(for device: HomeDeviceGroup) -> ConnectionProfile? {
+        device.workspaces.first(where: \.isActive)?.profile
+            ?? device.workspaces.first(where: { !$0.sessions.isEmpty })?.profile
+            ?? device.workspaces.first?.profile
     }
 
     private var connectionEmptyState: some View {
