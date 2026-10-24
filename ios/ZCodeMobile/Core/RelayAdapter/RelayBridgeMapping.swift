@@ -82,7 +82,9 @@ enum RelayBridgeMapping {
     static func models(_ options: [RelayJSON]) -> RelayJSON {
         .object(["models": .array(options.compactMap { option in
             guard let provider = option["ref"]["providerId"].string, let model = option["ref"]["modelId"].string else { return nil }
-            return .object(["providerId": .string(provider), "providerName": option["providerLabel"].string.map(RelayJSON.string) ?? .string(provider), "modelId": .string(model), "name": option["label"].string.map(RelayJSON.string) ?? .string(model), "available": .bool(option["disabledReason"].string == nil), "unavailableReason": option["disabledReason"], "supportsImages": .bool(option["supportsImages"].bool == true), "supportsPDF": .bool(option["supportsPdf"].bool == true), "thoughtLevels": .array((option["reasoning"]["levels"].array ?? []).compactMap { ($0["value"].string ?? $0.string).map(RelayJSON.string) }), "defaultThoughtLevel": option["reasoning"]["defaultLevel"]])
+            // Newer desktops nest modality flags under properties.inputFormat.
+            let input = option["properties"]["inputFormat"]
+            return .object(["providerId": .string(provider), "providerName": option["providerLabel"].string.map(RelayJSON.string) ?? .string(provider), "modelId": .string(model), "name": option["label"].string.map(RelayJSON.string) ?? .string(model), "available": .bool(option["disabledReason"].string == nil), "unavailableReason": option["disabledReason"], "supportsImages": .bool(option["supportsImages"].bool == true || input["supportsImage"].bool == true), "supportsPDF": .bool(option["supportsPdf"].bool == true || input["supportsPdf"].bool == true), "thoughtLevels": .array((option["reasoning"]["levels"].array ?? []).compactMap { ($0["value"].string ?? $0.string).map(RelayJSON.string) }), "defaultThoughtLevel": option["reasoning"]["defaultLevel"]])
         }), "modes": .array(["build", "edit", "plan", "yolo"].map(RelayJSON.string))])
     }
     static func settings(_ snapshot: RelaySessionSnapshot, permissionMode: String?) throws -> RelayJSON {

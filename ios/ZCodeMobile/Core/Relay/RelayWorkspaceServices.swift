@@ -47,7 +47,25 @@ public enum RelayWorkspacePath {
 
 public extension RelayClient {
     func readWorkspaceState() async throws -> RelayWorkspaceState {
-        try await RelayWorkspaceState(raw: rpc("zcode-session", "readWorkspaceState"))
+        do {
+            return try await RelayWorkspaceState(raw: rpc("zcode-session", "readWorkspaceState"))
+        } catch let failure as RelayFailure where failure.code == "desktop_rpc_error" {
+            // ZCode 3.16 removed this RPC; the same catalog now lives on every
+            // session snapshot, so read the workspace's latest task once.
+            return try await sessionCatalogWorkspaceState()
+        }
+    }
+    /// Fallback catalog source for desktops without readWorkspaceState. The model
+    /// list and current mode/thought come from the newest task's settings, which
+    /// the desktop keeps in the exact legacy shape.
+    private func sessionCatalogWorkspaceState() async throws -> RelayWorkspaceState {
+        guard let bridge else { throw RelayFailure.closed() }
+        let tasks = try await listTasks()
+        guard let latest = tasks.first(where: { $0.workspacePath == bridge.workspacePath }) ?? tasks.first else {
+            throw RelayFailure("settings_unavailable", "这个项目还没有任务，暂时读不到电脑的模型配置。")
+        }
+        let snapshot = try await readSession(latest.id, messageLimit: 1)
+        return try RelayWorkspaceState(raw: .object(["settings": snapshot.raw["settings"]]))
     }
     func listModels() async throws -> [RelayJSON] { try await readWorkspaceState().models }
 

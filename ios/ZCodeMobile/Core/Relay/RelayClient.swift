@@ -507,7 +507,15 @@ public actor RelayClient {
         switch message.type {
         case 201: completeRPC(id, result: .success(body))
         case 202, 203:
-            completeRPC(id, result: .failure(RelayFailure("desktop_rpc_error", "The desktop rejected the service request.")))
+            // Surface a bounded slice of the host's own reason; the stack and any
+            // echoed parameters stay on the desktop.
+            let detail = body["message"].string?
+                .split(separator: "\n").first?
+                .prefix(160)
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            let message = detail.flatMap { $0.isEmpty ? nil : "电脑拒绝了这项请求：\($0)" }
+                ?? "电脑拒绝了这项请求，请稍后重试。"
+            completeRPC(id, result: .failure(RelayFailure("desktop_rpc_error", message)))
         case 204: if id == conversationListener { receiveConversation(body) }
         default: throw RelayFailure.invalid("Unsupported service response type.")
         }

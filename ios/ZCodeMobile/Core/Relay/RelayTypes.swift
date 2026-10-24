@@ -324,7 +324,11 @@ public struct RelaySessionSnapshot: Sendable, Equatable {
     public init(raw: RelayJSON) throws { _ = try raw["session"].requiringString("sessionId"); self.raw = raw }
     func supports(_ flag: String) -> Bool {
         let options = raw["settings"]["model"]["available"].array ?? []
-        return options.first { $0["ref"] == model }?[flag].bool == true
+        let inputFlag = flag == "supportsImages" ? "supportsImage" : flag
+        for option in options where option["ref"] == model {
+            return option[flag].bool == true || option["properties"]["inputFormat"][inputFlag].bool == true
+        }
+        return false
     }
 }
 
