@@ -300,10 +300,14 @@ public actor RelayClient {
             }; return
         }
         if type == "error" {
-            if value["code"].string == "AUTH_FAILED", pairing?.requiresAccountToken == true {
+            let code = value["code"].string
+            if code == "AUTH_FAILED", pairing?.requiresAccountToken == true {
                 throw RelayFailure("relay_account_login_required", "账号不匹配或登录已失效。请确认手机和电脑登录同一账号（Z.ai 或 BigModel），然后重新登录。")
             }
-            throw RelayFailure.rejected(code: value["code"].string, paired: paired)
+            if code == "DEVICE_OFFLINE" {
+                throw RelayFailure("relay_desktop_offline", "电脑不在线或没有开启远程控制。请确认 ZCode 正在运行，并在电脑上开启「移动端远程控制」。")
+            }
+            throw RelayFailure.rejected(code: code, paired: paired)
         }
         guard type == "data", paired else { return }
         let payload = value["payload"], subtype = try payload.requiringString("zcode_type")
