@@ -11,6 +11,9 @@ struct ComposerView: View {
     var onReasoningVisibilityChange: (Bool) -> Void = { _ in }
     @FocusState private var focused: Bool
     @State private var text = ""
+    @State private var mentionItems: [RemoteFile] = []
+    @State private var activeMentionQuery: String?
+    @State private var mentionTask: Task<Void, Never>?
     @State private var attachments: [Attachment] = []
     @State private var attachmentDraftIdentity = ""
     @State private var photoSelections: [PhotosPickerItem] = []
@@ -48,6 +51,29 @@ struct ComposerView: View {
         "\(store.isReferenceMode)|\(store.activeProfileID ?? "unconnected")|\(store.activeProfile?.baseURL ?? "")|\(draftKey)"
     }
     private var expanded: Bool { showContext || focused || !text.isEmpty || !attachments.isEmpty || sessionID == nil }
+    private var commandCatalog: [BridgeSlashCommand] {
+        if let sessionID, let commands = store.slashCommandsBySession[sessionID], !commands.isEmpty {
+            return commands
+        }
+        return store.lastSlashCommands
+    }
+
+    private var slashQuery: String? {
+        let value = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard value.hasPrefix("/"), value.count > 0,
+              !value.dropFirst().contains(where: { $0.isWhitespace }) else { return nil }
+        return String(value.dropFirst())
+    }
+
+    private var slashSuggestions: [BridgeSlashCommand] {
+        guard let slashQuery else { return [] }
+        let matches = commandCatalog.filter {
+            slashQuery.isEmpty || $0.name.localizedStandardContains(slashQuery)
+                || $0.description.localizedStandardContains(slashQuery)
+        }
+        return Array(matches.prefix(6))
+    }
+
     private var canSend: Bool {
         (!text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !attachments.isEmpty) && !submitting
             && (!isRunning || store.activeProfile?.isRelay == true || store.isReferenceMode) && (sessionID.map { !store.sendingSessions.contains($0) } ?? true)
@@ -184,7 +210,10 @@ struct ComposerView: View {
         .onChange(of: speech.isRecording) { _, recording in
             if !recording, voicePhase == .recording { finishInlineVoice(sendAfter: false) }
         }
-        .onChange(of: text) { _, value in if sessionID.flatMap({ store.editingQueuedInput[$0] }) == nil { store.setDraft(value, for: draftKey) } }
+        .onChange(of: text) { _, value in
+            if sessionID.flatMap({ store.editingQueuedInput[$0] }) == nil { store.setDraft(value, for: draftKey) }
+            updateMentionSuggestions(value)
+        }
         .onChange(of: draftKey) { _, key in
             cancelInlineVoice()
             text = store.drafts[key] ?? ""
@@ -259,6 +288,13 @@ struct ComposerView: View {
                     }
                 }
             }
+            if !voiceActive {
+                if !slashSuggestions.isEmpty {
+                    suggestionPanel
+                } else if !mentionItems.isEmpty {
+                    mentionPanel
+                }
+            }
             HStack(spacing: 10) {
                 if !expanded && !voiceActive { attachmentMenu }
                 inputField.frame(minHeight: expanded ? 28 : 34, alignment: expanded ? .top : .center)
@@ -311,6 +347,109 @@ struct ComposerView: View {
         .animation(reduceMotion ? .easeOut(duration: 0.15) : .spring(response: 0.25, dampingFraction: 0.9), value: voiceActive)
         .measureLayout("composer.surface")
         .tint(ZTheme.accent)
+    }
+
+
+    private var suggestionPanel: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            ForEach(slashSuggestions) { command in
+                Button { applyCommand(command) } label: {
+                    HStack(alignment: .top, spacing: 10) {
+                        Text("/" + command.name)
+                            .font(.system(size: 15, weight: .semibold))
+                            .foregroundStyle(ZTheme.accent)
+                            .frame(minWidth: 82, alignment: .leading)
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(command.description).font(.system(size: 13)).foregroundStyle(.primary)
+                            if let hint = command.inputHint, !hint.isEmpty {
+                                Text(hint).font(.system(size: 11)).foregroundStyle(.tertiary).lineLimit(1)
+                            }
+                        }
+                        Spacer(minLength: 0)
+                    }
+                    .padding(.vertical, 7).contentShape(Rectangle())
+                }.buttonStyle(.plain)
+            }
+        }
+        .padding(.horizontal, 10).padding(.vertical, 5)
+        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 14))
+    }
+
+    private var mentionPanel: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            ForEach(mentionItems.prefix(8)) { file in
+                Button { applyMention(file) } label: {
+                    HStack(spacing: 8) {
+                        Image(systemName: file.isDirectory ? "folder" : "doc.text")
+                            .font(.system(size: 13)).foregroundStyle(.secondary)
+                        Text(file.path).font(.system(size: 13)).lineLimit(1)
+                        Spacer(minLength: 0)
+                    }
+                    .padding(.vertical, 6).contentShape(Rectangle())
+                }.buttonStyle(.plain)
+            }
+        }
+        .padding(.horizontal, 10).padding(.vertical, 5)
+        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 14))
+    }
+
+    private func applyCommand(_ command: BridgeSlashCommand) {
+        text = "/" + command.name + " "
+        focused = true
+    }
+
+    private func applyMention(_ file: RemoteFile) {
+        guard let query = activeMentionQuery, let at = text.lastIndex(of: "@") else { return }
+        let end = text.index(at, offsetBy: query.count + 1, limitedBy: text.endIndex) ?? text.endIndex
+        text.replaceSubrange(at..<end, with: "@" + file.path + (file.isDirectory ? "/" : " ") )
+        activeMentionQuery = nil
+        mentionItems = []
+        focused = true
+    }
+
+    private func updateMentionSuggestions(_ value: String) {
+        mentionTask?.cancel()
+        mentionTask = nil
+        mentionItems = []
+        guard store.connection.isOnline,
+              let at = value.lastIndex(of: "@"),
+              let projectID = (sessionID.flatMap { store.session($0)?.projectID } ?? store.selectedProjectID),
+              !projectID.isEmpty else { activeMentionQuery = nil; return }
+        if let previous = value[..<at].last, !previous.isWhitespace && previous != "\n" {
+            activeMentionQuery = nil
+            return
+        }
+        let query = String(value[value.index(after: at)...])
+        guard !query.contains(where: { $0.isWhitespace }), query.count <= 80 else {
+            activeMentionQuery = nil
+            return
+        }
+        activeMentionQuery = query
+        #if DEBUG
+        RelayTestLog.write("mention start query=\(query) project=\(projectID)")
+        #endif
+        mentionTask = Task { @MainActor in
+            try? await Task.sleep(for: .milliseconds(250))
+            guard !Task.isCancelled, activeMentionQuery == query else { return }
+            do {
+                let files: [RemoteFile]
+                if query.isEmpty {
+                    files = try await store.fileListing(projectID: projectID).files
+                } else {
+                    files = try await store.searchFiles(projectID: projectID, query: query).files.map(\.local)
+                }
+                guard !Task.isCancelled, activeMentionQuery == query else { return }
+                mentionItems = Array(files.prefix(8))
+                #if DEBUG
+                RelayTestLog.write("mention result query=\(query) files=\(files.count) visible=\(mentionItems.count)")
+                #endif
+            } catch {
+                if !Task.isCancelled { mentionItems = [] }
+                #if DEBUG
+                RelayTestLog.write("mention error query=\(query) \(error.localizedDescription)")
+                #endif
+            }
+        }
     }
 
     private var inputField: some View {

@@ -1,5 +1,6 @@
 import SwiftUI
 import Observation
+import Foundation
 
 struct MessageView: View {
     @Environment(AppStore.self) private var store
@@ -63,6 +64,7 @@ struct MessageView: View {
                 }
             }
         }.frame(maxWidth: .infinity, alignment: .leading)
+            .textSelection(.enabled)
             .disclosureGroupStyle(CompactActivityDisclosureStyle())
             .animation(reduceMotion ? nil : .easeInOut(duration: 0.28), value: message.text.isEmpty)
     }
@@ -200,14 +202,34 @@ final class MessageTextCache {
     }
     nonisolated private static func attributed(_ text: String) -> AttributedString {
         let trimmed = text.trimmingCharacters(in: .newlines)
-        return (try? AttributedString(markdown: trimmed, options: .init(interpretedSyntax: .inlineOnlyPreservingWhitespace))) ?? AttributedString(trimmed)
+        let parsed = (try? AttributedString(markdown: trimmed, options: .init(interpretedSyntax: .inlineOnlyPreservingWhitespace))) ?? AttributedString(trimmed)
+        return linkified(parsed)
+    }
+
+    /// Markdown links keep their attributes; bare http(s) URLs are promoted to
+    /// tappable links so pasted addresses behave like the official client.
+    nonisolated private static func linkified(_ value: AttributedString) -> AttributedString {
+        var result = value
+        let plain = String(result.characters)
+        guard let detector = try? NSDataDetector(types: NSTextCheckingResult.CheckingType.link.rawValue) else { return result }
+        let ns = plain as NSString
+        detector.enumerateMatches(in: plain, range: NSRange(location: 0, length: ns.length)) { match, _, _ in
+            guard let match, let url = match.url, ["http", "https"].contains(url.scheme?.lowercased() ?? "") else { return }
+            let text = ns.substring(with: match.range)
+            if let range = result.range(of: text) {
+                result[range].link = url
+                result[range].underlineStyle = .single
+            }
+        }
+        return result
     }
     /// Foundation's CommonMark block parser owns syntax, including headings,
     /// lists, quotes and escaped delimiters. Inline runs retain their attributes.
     nonisolated private static func prose(_ text: String, start: Int) -> [MessageTextBlock] {
-        guard let value = try? AttributedString(markdown: text, options: .init(interpretedSyntax: .full)) else {
+        guard let parsed = try? AttributedString(markdown: text, options: .init(interpretedSyntax: .full)) else {
             return [.prose(start, attributed(text))]
         }
+        let value = linkified(parsed)
         var blocks: [MessageTextBlock] = []
         var current = AttributedString()
         var identity: Int?
@@ -441,7 +463,7 @@ private struct MessageTextBlockRow: View, Equatable {
                     ForEach(Array(rows.enumerated()), id: \.offset) { index, row in
                         HStack(alignment: .top, spacing: 20) {
                             ForEach(Array(row.enumerated()), id: \.offset) { _, cell in
-                                Text(cell).font(.system(size: 16, weight: index == 0 ? .semibold : .regular))
+                                Text(cell).font(.system(size: 16, weight: index == 0 ? .semibold : .regular)).textSelection(.enabled)
                                     .frame(width: 150, alignment: .leading)
                             }
                         }.padding(.vertical, 14)

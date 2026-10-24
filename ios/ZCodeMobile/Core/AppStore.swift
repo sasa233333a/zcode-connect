@@ -37,6 +37,8 @@ final class AppStore {
     var histories: [String: ConversationHistory] = [:]
     var loadingHistory: Set<String> = []
     var pendingInteractions: [String: [PendingInteraction]] = [:]
+    var slashCommandsBySession: [String: [BridgeSlashCommand]] = [:]
+    var lastSlashCommands: [BridgeSlashCommand] = []
     var options = SessionOptions()
     var sortOrder: SortOrder = .priority
     var showArchived = false
@@ -224,6 +226,7 @@ final class AppStore {
     @ObservationIgnored var notificationEventSink: ((TaskNotificationEvent) -> Void)?
     /// Called whenever task status changes, independent of SwiftUI view updates.
     @ObservationIgnored var activitySyncSink: (() -> Void)?
+    @ObservationIgnored var activityEndSink: (() -> Void)?
 
     init(defaults: UserDefaults = .standard,
          reconnectDelay: @escaping @Sendable (Duration) async throws -> Void = { try await Task.sleep(for: $0) }) {
@@ -791,6 +794,10 @@ final class AppStore {
             }
             RelayTestLog.write("reconnect online=\(connection.isOnline) sessions=\(sessions.count) reconnecting=\(isAutoReconnecting)")
         }
+        if let id = currentSessionID ?? sessions.first?.id {
+            if ProcessInfo.processInfo.arguments.contains("--relay-test-slash-draft") { setDraft("/", for: id) }
+            if ProcessInfo.processInfo.arguments.contains("--relay-test-mention-draft") { setDraft("@", for: id) }
+        }
         if ProcessInfo.processInfo.arguments.contains("--relay-test-home") {
             path = []
         }
@@ -1060,6 +1067,7 @@ final class AppStore {
             await refresh()
             return
         }
+        activityEndSink?()
         // Switching projects on the same computer keeps the existing relay
         // socket and bridge session. Re-pairing here races the old controller
         // and can be rejected as "another phone took over".
@@ -1080,6 +1088,7 @@ final class AppStore {
             } catch is CancellationError {
             } catch {
                 errorMessage = error.localizedDescription
+                activitySyncSink?()
             }
             return
         }
@@ -1569,6 +1578,7 @@ final class AppStore {
     }
 
     func disconnect() {
+        activityEndSink?()
         cancelAutomaticConnection()
         if !isReferenceMode, let profile = activeProfile { setAutomaticConnectionBlock("manual_disconnect", profileID: profile.id) }
         tearDownConnection()
@@ -1625,6 +1635,7 @@ final class AppStore {
         stoppingSessions = []
         changingGoals = []
         loadingAgentDirectories = []; agentDirectoryErrors = [:]
+        slashCommandsBySession = [:]
         rejectedSubmissionIDs = []
         notifiedInteractionIDs = []
         notifiedWaitingSessionIDs = []
@@ -1808,6 +1819,13 @@ final class AppStore {
             guard epoch == connectionEpoch, transcriptRequests[id] == request else { return }
             if (contextRevisions[id] ?? 0) <= revision { contextUsage[id] = detail.contextUsage }
             if (interactionRevisions[id] ?? 0) <= revision { pendingInteractions[id] = detail.pendingInteractions }
+            if let commands = detail.slashCommands {
+                slashCommandsBySession[id] = commands
+                if !commands.isEmpty { lastSlashCommands = commands }
+                #if DEBUG
+                RelayTestLog.write("slash commands \(id) count=\(commands.count)")
+                #endif
+            }
             if (activityRevisions[id] ?? 0) <= revision { applyHostActivity(detail.hostActivity, sessionID: id) }
             if (sessionRevisions[id] ?? 0) <= revision {
                 eventRevision += 1

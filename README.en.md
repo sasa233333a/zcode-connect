@@ -21,6 +21,8 @@ It is an independently developed native iOS client with a Liquid Glass interface
 - **Browse by project**: conversations are grouped by project; opening a conversation in another project switches the workspace in the background without reconnecting or re-pairing.
 - **Automatic reconnection**: retry after network changes, returning to the foreground, or a brief relay interruption, with a manual retry in the banner.
 - **Notifications and Dynamic Island**: get notified when a task completes, waits for approval, or fails, and see the active task on the Dynamic Island and Lock Screen.
+- **Slash commands and mentions**: type `/` for the desktop's real slash commands and `@` to pick files from the current project.
+- **Copy and links**: select and copy messages, tool details, and code; Markdown links and bare URLs open directly.
 - **Follow your agents**: view sub-agent progress and conversations as a task moves forward.
 - **Review files and changes**: browse project files and inspect changes made during a task.
 - **Keep your model setup**: available models and options come from the connected computer.

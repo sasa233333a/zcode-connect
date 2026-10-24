@@ -405,7 +405,7 @@ actor RelayRemoteTransport: RemoteTransport {
         let snapshot = try await loadSessionMetadata(id)
         await refreshSubagentDirectory(id, projection: projection)
         let contextProjection = await client.currentProjection(sessionID: id) ?? projection
-        return .object(["session": sessionJSON(id), "messages": .array(RelayBridgeMapping.messages(projection)), "queue": queueItems(projection), "pendingInteractions": .array(projection.pendingInteractions.map { RelayBridgeMapping.interaction($0, sessionID: id) }), "hostActivity": hostActivity(projection), "history": RelayBridgeMapping.history(projection), "contextUsage": RelayBridgeMapping.contextUsage(contextProjection, snapshot: snapshot)])
+        return .object(["session": sessionJSON(id), "messages": .array(RelayBridgeMapping.messages(projection)), "queue": queueItems(projection), "pendingInteractions": .array(projection.pendingInteractions.map { RelayBridgeMapping.interaction($0, sessionID: id) }), "slashCommands": snapshot.raw["slashCommands"], "hostActivity": hostActivity(projection), "history": RelayBridgeMapping.history(projection), "contextUsage": RelayBridgeMapping.contextUsage(contextProjection, snapshot: snapshot)])
     }
     private func directoryVersion(_ projection: RelayConversationProjection) -> String { projection.logEpoch + ":" + String(projection.hostAgents?.revision ?? 0) }
     private func hostActivity(_ projection: RelayConversationProjection) -> RelayJSON {
