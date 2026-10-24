@@ -838,21 +838,28 @@ final class AppStore {
     func beginRelayPairing(_ raw: String, confirmedControllerReplacement: Bool, attempt: UUID = UUID(), reportFailure: Bool = false) async throws -> RelayWorkspaceSelectionContext {
         let pairing = try RelayPairing(payload: raw)
         guard confirmedControllerReplacement else { throw BridgeFailure(message: "请先确认连接这台电脑。", code: "controller_confirmation_required") }
+        // Validate before touching the current connection: a missing login or a
+        // legacy QR must never tear down an already working computer.
+        try validate(pairing: pairing)
         guard !Task.isCancelled else { throw CancellationError() }
         disconnect()
         return try await pairRelay(raw, confirmedControllerReplacement: confirmedControllerReplacement, attempt: attempt, reportFailure: reportFailure, pairing: pairing)
     }
 
-    private func pairRelay(_ raw: String, confirmedControllerReplacement: Bool, attempt: UUID,
-                           reportFailure: Bool, pairing parsed: RelayPairing? = nil) async throws -> RelayWorkspaceSelectionContext {
-        let pairing = try parsed ?? RelayPairing(payload: raw)
-        guard confirmedControllerReplacement else { throw BridgeFailure(message: "请先确认连接这台电脑。", code: "controller_confirmation_required") }
+    private func validate(pairing: RelayPairing) throws {
         if pairing.requiresAccountToken, relayAccount == nil {
             throw BridgeFailure(message: "请先登录 ZCode 账号。手机和电脑需要登录同一账号，再扫描连接二维码。", code: "account_login_required")
         }
         if pairing.isLegacyOfficial {
             throw BridgeFailure(message: "这个连接码来自旧版 ZCode。请在电脑上重新开启远程控制并扫描新的二维码。", code: "relay_legacy_pairing")
         }
+    }
+
+    private func pairRelay(_ raw: String, confirmedControllerReplacement: Bool, attempt: UUID,
+                           reportFailure: Bool, pairing parsed: RelayPairing? = nil) async throws -> RelayWorkspaceSelectionContext {
+        let pairing = try parsed ?? RelayPairing(payload: raw)
+        guard confirmedControllerReplacement else { throw BridgeFailure(message: "请先确认连接这台电脑。", code: "controller_confirmation_required") }
+        try validate(pairing: pairing)
         guard !Task.isCancelled else { throw CancellationError() }
         tearDownConnection()
         relayConnectionAttempt = attempt
