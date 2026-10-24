@@ -4,11 +4,14 @@ struct HomeView: View {
     @Environment(AppStore.self) private var store
     @State private var search = ""
     @State private var collapsed: Set<String> = []
+    @State private var selectedDeviceID: String?
+    @State private var selectedProjectKey: String?
     @State private var renameSession: RemoteSession?
     @State private var renameText = ""
     @State private var renameScope: String?
     @State private var confirmRelayReconnect = false
-    @State private var computerToConfirm: ConnectionProfile?
+    @State private var connectRequest: ConnectRequest?
+    @State private var pendingOpen: PendingOpen?
 
     private struct SessionRowIdentity: Hashable {
         var scope: String
@@ -16,13 +19,136 @@ struct HomeView: View {
         var actions: [SessionContextAction.AccessibilityIdentity]
     }
 
-    private struct SessionGroup: Identifiable {
+    private struct HomeSection: Identifiable {
         var id: String
+        var device: HomeDeviceGroup
+        var workspace: HomeWorkspaceGroup
+        var projectName: String
+        var projectKey: String
         var sessions: [RemoteSession]
+    }
+
+    private struct ProjectChip: Identifiable {
+        var id: String
+        var title: String
+        var count: Int
+    }
+
+    private struct ConnectRequest: Identifiable {
+        let id = UUID()
+        var profile: ConnectionProfile
+        var deviceName: String
+        var workspaceTitle: String
+    }
+
+    private struct PendingOpen: Identifiable {
+        let id = UUID()
+        var profile: ConnectionProfile
+        var sessionID: String
+        var title: String
+        var deviceName: String
+        var workspaceTitle: String
     }
 
     private var connectionScope: String {
         "\(store.isReferenceMode)|\(store.activeProfileID ?? "")|\(store.activeProfile?.baseURL ?? "")"
+    }
+
+    private var selectedDevice: HomeDeviceGroup? {
+        guard let selectedDeviceID else { return nil }
+        return store.homeDeviceGroups.first { $0.id == selectedDeviceID }
+    }
+
+    private var visibleDevices: [HomeDeviceGroup] {
+        let devices = store.homeDeviceGroups
+        guard let selectedDeviceID else { return devices }
+        return devices.filter { $0.id == selectedDeviceID }
+    }
+
+    private var sections: [HomeSection] {
+        var result: [HomeSection] = []
+        for device in visibleDevices {
+            for workspace in device.workspaces {
+                let visible = workspace.sessions.filter { session in
+                    guard session.isArchived == store.showArchived else { return false }
+                    guard !search.isEmpty else { return true }
+                    return session.title.localizedStandardContains(search)
+                        || session.projectName.localizedStandardContains(search)
+                        || device.name.localizedStandardContains(search)
+                        || workspace.title.localizedStandardContains(search)
+                }
+                let grouped = Dictionary(grouping: visible) { session in
+                    let project = session.projectID.isEmpty ? session.projectName : session.projectID
+                    return workspace.id + "|" + project
+                }
+                for (key, items) in grouped {
+                    let project = workspace.projects.first { $0.id == items.first?.projectID }
+                    let name = items.first?.projectName ?? project?.name ?? workspace.title
+                    result.append(HomeSection(id: key, device: device, workspace: workspace,
+                                              projectName: name, projectKey: key, sessions: items))
+                }
+            }
+        }
+        if let selectedProjectKey {
+            result = result.filter { $0.projectKey == selectedProjectKey }
+        }
+        return result.sorted { lhs, rhs in
+            let left = lhs.sessions.map(\.updatedAt).max() ?? .distantPast
+            let right = rhs.sessions.map(\.updatedAt).max() ?? .distantPast
+            if left != right { return left > right }
+            return lhs.projectName.localizedStandardCompare(rhs.projectName) == .orderedAscending
+        }
+    }
+
+    private var projectChips: [ProjectChip] {
+        var seen: Set<String> = []
+        var result: [ProjectChip] = []
+        for device in visibleDevices {
+            for workspace in device.workspaces {
+                let visible = workspace.sessions.filter { $0.isArchived == store.showArchived }
+                let grouped = Dictionary(grouping: visible) { session in
+                    let project = session.projectID.isEmpty ? session.projectName : session.projectID
+                    return workspace.id + "|" + project
+                }
+                for (key, items) in grouped where seen.insert(key).inserted {
+                    let project = workspace.projects.first { $0.id == items.first?.projectID }
+                    result.append(ProjectChip(id: key,
+                                              title: items.first?.projectName ?? project?.name ?? workspace.title,
+                                              count: items.count))
+                }
+            }
+        }
+        return result.sorted {
+            if $0.count != $1.count { return $0.count > $1.count }
+            return $0.title.localizedStandardCompare($1.title) == .orderedAscending
+        }
+    }
+
+    private var projectChipsVisible: Bool { projectChips.count > 1 || selectedProjectKey != nil }
+
+    private func orderedSessions(_ sessions: [RemoteSession]) -> [RemoteSession] {
+        sessions.sorted { a, b in
+            if store.sortOrder == .priority {
+                if a.status == .waiting && b.status != .waiting { return true }
+                if b.status == .waiting && a.status != .waiting { return false }
+                if a.isPinned != b.isPinned { return a.isPinned }
+            }
+            return a.updatedAt > b.updatedAt
+        }
+    }
+
+    private func menuItems(for session: RemoteSession, active: Bool = true) -> [SessionMenuItem] {
+        var items = SessionMenuPolicy.items(for: session, isReferenceMode: store.isReferenceMode,
+                                            isRelay: store.activeProfile?.isRelay == true,
+                                            isOnline: store.connection.isOnline, isUnread: store.isUnread(session.id))
+        if !active {
+            items = items.map { item in
+                var item = item
+                item.isEnabled = item.id == .copyID
+                return item
+            }
+        }
+        return items
     }
 
     private func beginRename(_ session: RemoteSession) {
@@ -32,65 +158,48 @@ struct HomeView: View {
         renameSession = session
     }
 
-    private func menuItems(for session: RemoteSession) -> [SessionMenuItem] {
-        SessionMenuPolicy.items(for: session, isReferenceMode: store.isReferenceMode,
-                                isRelay: store.activeProfile?.isRelay == true,
-                                isOnline: store.connection.isOnline, isUnread: store.isUnread(session.id))
-    }
-
     private var renameAvailable: Bool {
         guard renameScope == connectionScope, let id = renameSession?.id, let session = store.session(id) else { return false }
         return menuItems(for: session).contains { $0.id == .rename && $0.isEnabled }
     }
 
-    private var groups: [SessionGroup] {
-        let filtered = store.sessions.filter {
-            $0.isArchived == store.showArchived &&
-            (search.isEmpty || $0.title.localizedStandardContains(search) || $0.projectName.localizedStandardContains(search))
-        }
-        if store.sortOrder == .project {
-            let byProject = Dictionary(grouping: filtered, by: \.projectName)
-            return byProject.keys.sorted().map { SessionGroup(id: $0, sessions: byProject[$0] ?? []) }
-        }
-        var ordered = filtered
-        if !store.isReferenceMode || store.sortOrder == .recent {
-            ordered.sort { a, b in
-                if store.sortOrder == .priority {
-                    if a.status == .waiting && b.status != .waiting { return true }
-                    if b.status == .waiting && a.status != .waiting { return false }
-                    if a.isPinned != b.isPinned { return a.isPinned }
-                }
-                return a.updatedAt > b.updatedAt
-            }
-        }
-        var result: [SessionGroup] = []
-        for session in ordered {
-            let label = groupTitle(session.updatedAt)
-            if let index = result.firstIndex(where: { $0.id == label }) { result[index].sessions.append(session) }
-            else { result.append(SessionGroup(id: label, sessions: [session])) }
-        }
-        return result
-    }
-
     var body: some View {
-        Group {
-            if !store.connection.isOnline && store.sessions.isEmpty {
-                connectionEmptyState
-            } else {
-                sessionList
+        VStack(spacing: 0) {
+            if !store.isReferenceMode {
+                deviceBar
+                if projectChipsVisible { projectBar }
+                reconnectBanner
+            }
+            Group {
+                if !store.connection.isOnline && store.sessions.isEmpty && store.profiles.isEmpty {
+                    connectionEmptyState
+                } else {
+                    sessionList
+                }
             }
         }
         .background(ZTheme.background)
-        .confirmationDialog("切换到这台电脑？", isPresented: Binding(get: { computerToConfirm != nil }, set: { if !$0 { computerToConfirm = nil } }), titleVisibility: .visible) {
+        .confirmationDialog("连接这台电脑？", isPresented: Binding(get: { connectRequest != nil }, set: { if !$0 { connectRequest = nil } }), titleVisibility: .visible) {
             Button("连接并切换") {
-                guard let profile = computerToConfirm else { return }
-                computerToConfirm = nil
+                guard let request = connectRequest else { return }
+                connectRequest = nil
                 search = ""; collapsed = []
-                Task { await store.switchComputer(profile, confirmedControllerReplacement: true) }
+                Task { await store.switchComputer(request.profile, confirmedControllerReplacement: true) }
             }
-            Button("取消", role: .cancel) { computerToConfirm = nil }
+            Button("取消", role: .cancel) { connectRequest = nil }
         } message: {
-            Text("连接 \(computerToConfirm?.name ?? "所选电脑") 并加载其任务。如果另一台手机正在控制该电脑，此次连接可能替换它；电脑上的任务会继续运行。")
+            Text("连接 \(connectRequest?.deviceName ?? "所选电脑") 的 \(connectRequest?.workspaceTitle ?? "项目")。如果另一台手机正在控制这台电脑，此次连接可能替换它；电脑上的任务会继续运行。")
+        }
+        .confirmationDialog("连接并打开这个任务？", isPresented: Binding(get: { pendingOpen != nil }, set: { if !$0 { pendingOpen = nil } }), titleVisibility: .visible) {
+            Button("连接并打开") {
+                guard let request = pendingOpen else { return }
+                pendingOpen = nil
+                search = ""; collapsed = []
+                Task { await store.switchAndOpen(request.profile, sessionID: request.sessionID) }
+            }
+            Button("取消", role: .cancel) { pendingOpen = nil }
+        } message: {
+            Text("会切换到 \(pendingOpen?.deviceName ?? "这台电脑") 的 \(pendingOpen?.workspaceTitle ?? "项目")，然后打开“\(pendingOpen?.title ?? "任务")”。")
         }
         .confirmationDialog("重新连接 ZCode 远程控制？", isPresented: $confirmRelayReconnect, titleVisibility: .visible) {
             Button("连接这台电脑") {
@@ -109,18 +218,17 @@ struct HomeView: View {
             ToolbarItem(placement: .principal) {
                 Button { store.sheet = .connections } label: {
                     VStack(spacing: 2) {
-                        Text(store.showArchived ? "已归档任务" : "Zcode connect")
-                            .font(.system(size: 17, weight: .semibold)).foregroundStyle(.primary)
+                        Text(store.showArchived ? "已归档任务" : (selectedDevice?.name ?? "Zcode connect"))
+                            .font(.system(size: 17, weight: .semibold)).foregroundStyle(.primary).lineLimit(1)
                         HStack(spacing: 6) {
-                            Circle().fill(store.connection.isOnline ?
-                                          (store.isReferenceMode || store.streamConnected ? Color.green : Color.orange) : Color.gray)
+                            Circle().fill(statusColor)
                                 .frame(width: 6, height: 6)
-                            Image(systemName: "laptopcomputer").font(.system(size: 11))
-                            Text(store.connection.isOnline && !store.isReferenceMode && !store.streamConnected
-                                 ? "\(store.hostName) · 正在重连" : store.hostName).font(.system(size: 13))
+                            Image(systemName: selectedDevice == nil ? "square.grid.2x2" : "laptopcomputer")
+                                .font(.system(size: 11))
+                            Text(statusTitle).font(.system(size: 13)).lineLimit(1)
                         }.foregroundStyle(.secondary)
                     }
-                }.buttonStyle(.plain).accessibilityLabel("当前电脑，\(store.hostName)，\(store.connection.label)")
+                }.buttonStyle(.plain).accessibilityLabel("当前电脑，\(statusTitle)，\(store.connection.label)")
             }
             ToolbarItem(placement: .topBarTrailing) {
                 homeMenu
@@ -156,22 +264,185 @@ struct HomeView: View {
         }
         .onChange(of: connectionScope) { _, _ in
             renameSession = nil; renameScope = nil
-            search = ""; collapsed = []
+            search = ""; collapsed = []; pendingOpen = nil
         }
         .onChange(of: store.sessions.map(\.id)) { _, ids in
             if let id = renameSession?.id, !ids.contains(id) { renameSession = nil; renameScope = nil }
+        }
+        .onChange(of: store.homeDeviceGroups.map(\.id)) { _, ids in
+            if let selectedDeviceID, !ids.contains(selectedDeviceID) { self.selectedDeviceID = nil }
+        }
+        .onChange(of: projectChips.map(\.id)) { _, ids in
+            if let selectedProjectKey, !ids.contains(selectedProjectKey) { self.selectedProjectKey = nil }
         }
         .onChange(of: renameAvailable) { _, available in
             if !available { renameSession = nil; renameScope = nil }
         }
     }
 
+    private var statusColor: Color {
+        guard let selectedDevice else { return store.connection.isOnline ? .green : .gray }
+        if !selectedDevice.isActive { return .gray }
+        if store.isAutoReconnecting { return .orange }
+        if store.connection.isOnline {
+            return store.isReferenceMode || store.streamConnected ? .green : .orange
+        }
+        return .gray
+    }
+
+    private var statusTitle: String {
+        guard let selectedDevice else {
+            return store.connection.isOnline ? store.hostName : "全部设备"
+        }
+        if !selectedDevice.isActive {
+            return "\(selectedDevice.name) · 上次同步"
+        }
+        if store.isAutoReconnecting { return "\(store.hostName) · 正在重连" }
+        if store.connection.isOnline && !store.isReferenceMode && !store.streamConnected {
+            return "\(store.hostName) · 正在重连"
+        }
+        return store.hostName
+    }
+
+    private var deviceBar: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 8) {
+                deviceChip(title: "全部", symbol: "square.grid.2x2", selected: selectedDeviceID == nil,
+                           dot: nil) {
+                    selectedDeviceID = nil
+                    selectedProjectKey = nil
+                }
+                ForEach(store.homeDeviceGroups) { device in
+                    deviceChip(title: device.name, symbol: "desktopcomputer", selected: selectedDeviceID == device.id,
+                               dot: device.isActive ? statusColorFor(device) : nil) {
+                        selectedDeviceID = device.id
+                        selectedProjectKey = nil
+                    }
+                }
+                Button { store.sheet = .connections } label: {
+                    Image(systemName: "plus").font(.system(size: 13, weight: .semibold))
+                        .frame(width: 32, height: 32)
+                        .background(Color.primary.opacity(0.06), in: Circle())
+                }.buttonStyle(.plain).tint(.secondary)
+                    .accessibilityLabel("管理连接")
+            }
+            .padding(.horizontal, 20).padding(.top, 8).padding(.bottom, 6)
+        }
+        .accessibilityIdentifier("home.devices")
+    }
+
+    private func statusColorFor(_ device: HomeDeviceGroup) -> Color {
+        if !device.isActive { return .gray }
+        if store.isAutoReconnecting { return .orange }
+        return store.connection.isOnline ? (store.streamConnected ? .green : .orange) : .gray
+    }
+
+    private func deviceChip(title: String, symbol: String, selected: Bool, dot: Color?, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            HStack(spacing: 6) {
+                if let dot {
+                    Circle().fill(dot).frame(width: 6, height: 6)
+                }
+                Image(systemName: symbol).font(.system(size: 12, weight: .medium))
+                Text(title).font(.system(size: 14, weight: .medium)).lineLimit(1)
+            }
+            .foregroundStyle(selected ? .primary : .secondary)
+            .padding(.horizontal, 13).padding(.vertical, 8)
+            .background(selected ? Color.primary.opacity(0.10) : Color.clear, in: Capsule())
+        }
+        .buttonStyle(.plain)
+    }
+
+    private var projectBar: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 8) {
+                projectChip(title: "全部项目", selected: selectedProjectKey == nil) {
+                    selectedProjectKey = nil
+                }
+                ForEach(projectChips) { project in
+                    projectChip(title: project.title, count: project.count, selected: selectedProjectKey == project.id) {
+                        selectedProjectKey = project.id
+                    }
+                }
+            }
+            .padding(.horizontal, 20).padding(.bottom, 8)
+        }
+        .accessibilityIdentifier("home.projects")
+    }
+
+    private func projectChip(title: String, count: Int? = nil, selected: Bool, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            HStack(spacing: 5) {
+                Image(systemName: "folder").font(.system(size: 11, weight: .medium))
+                Text(title).font(.system(size: 13, weight: .medium)).lineLimit(1)
+                if let count, count > 0 {
+                    Text("\(count)").font(.system(size: 11)).foregroundStyle(.tertiary)
+                }
+            }
+            .foregroundStyle(selected ? .primary : .secondary)
+            .padding(.horizontal, 11).padding(.vertical, 6)
+            .background(selected ? Color.primary.opacity(0.08) : Color.clear, in: Capsule())
+        }
+        .buttonStyle(.plain)
+    }
+
+    @ViewBuilder private var reconnectBanner: some View {
+        if selectedDevice?.isActive != false, store.activeProfile != nil {
+            if store.isAutoReconnecting || store.connection == .connecting {
+                HStack(spacing: 12) {
+                    ProgressView().controlSize(.small)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(store.isAutoReconnecting ? "正在重新连接 \(store.hostName)" : "正在连接 \(store.hostName)")
+                            .font(.subheadline.weight(.medium))
+                        Text(store.reconnectAttempt > 1
+                             ? "第 \(store.reconnectAttempt) 次尝试 · 任务仍在电脑上运行"
+                             : "任务仍在电脑上运行")
+                            .font(.caption).foregroundStyle(.secondary)
+                    }
+                    Spacer(minLength: 6)
+                    Button("立即重试") { Task { await store.retryConnectionNow() } }
+                        .font(.caption.weight(.semibold))
+                }
+                .padding(.horizontal, 16).padding(.vertical, 10)
+                .background(Color.orange.opacity(0.10), in: RoundedRectangle(cornerRadius: 14))
+                .padding(.horizontal, 20).padding(.bottom, 8)
+            } else if !store.connection.isOnline {
+                HStack(spacing: 10) {
+                    Image(systemName: "wifi.exclamationmark").foregroundStyle(.orange)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(connectionFailureMessage).font(.caption).lineLimit(2)
+                        Text("自动重连已暂停，任务仍在电脑上运行").font(.caption2).foregroundStyle(.secondary)
+                    }
+                    Spacer(minLength: 6)
+                    Button(needsRelayLogin ? "登录账号" : "重新连接") {
+                        if needsRelayLogin { store.sheet = .pairing }
+                        else { Task { await store.retryConnectionNow() } }
+                    }
+                    .font(.caption.weight(.semibold))
+                }
+                .padding(.horizontal, 16).padding(.vertical, 10)
+                .background(Color.orange.opacity(0.10), in: RoundedRectangle(cornerRadius: 14))
+                .padding(.horizontal, 20).padding(.bottom, 8)
+            }
+        }
+    }
+
+    private var needsRelayLogin: Bool {
+        store.activeProfile?.isRelay == true && store.relayAccount == nil
+    }
+
+    private var connectionFailureMessage: String {
+        if needsRelayLogin { return "登录状态已失效，请重新登录 ZCode 账号。" }
+        if case .failed(let message) = store.connection { return message }
+        return "这台电脑尚未连接。"
+    }
+
     private var sessionList: some View {
-        let visibleGroups = groups
-        let firstGroupID = visibleGroups.first?.id
+        let visibleSections = sections
+        let firstID = visibleSections.first?.id
         return ScrollView {
             LazyVStack(alignment: .leading, spacing: 0) {
-                if store.sessionListTruncated {
+                if store.sessionListTruncated && !store.isReferenceMode {
                     InlineNotice(symbol: "list.bullet", text: "已加载 \(store.sessions.count) 个任务，电脑还有未返回的记录。当前搜索只覆盖已加载任务。")
                         .padding(.bottom, 16)
                 }
@@ -188,35 +459,19 @@ struct HomeView: View {
                         Label("返回全部任务", systemImage: "arrow.left").font(.subheadline)
                     }.padding(.bottom, 20)
                 }
-                if visibleGroups.isEmpty {
-                    ContentUnavailableView(search.isEmpty ? "还没有任务" : "没有找到聊天",
-                        systemImage: search.isEmpty ? "bubble.left.and.bubble.right" : "magnifyingglass",
-                        description: Text(search.isEmpty ? "创建一个任务，从手机继续你的工作。" : "试试其他任务名称或项目名称。"))
-                        .padding(.top, 100)
+                if visibleSections.isEmpty {
+                    emptyState
                 }
-                ForEach(visibleGroups) { group in
-                    Button {
-                        withAnimation(.easeInOut(duration: 0.2)) {
-                            if collapsed.contains(group.id) { collapsed.remove(group.id) }
-                            else { collapsed.insert(group.id) }
-                        }
-                    } label: {
-                        HStack(spacing: 9) {
-                            Text(group.id).font(.system(size: 17, weight: .semibold))
-                            Image(systemName: "chevron.down").font(.system(size: 9, weight: .semibold))
-                                .foregroundStyle(.secondary)
-                                .rotationEffect(.degrees(collapsed.contains(group.id) ? -90 : 0))
-                        }.foregroundStyle(.primary).frame(minHeight: 30, alignment: .leading)
-                    }.buttonStyle(.plain).padding(.bottom, 21)
-                        .padding(.top, group.id == firstGroupID ? 0 : -3)
-                    if !collapsed.contains(group.id) {
-                        ForEach(group.sessions) { session in
-                            sessionRow(session)
+                ForEach(visibleSections) { section in
+                    sectionHeader(section, first: section.id == firstID)
+                    if !collapsed.contains(section.id) {
+                        ForEach(orderedSessions(section.sessions)) { session in
+                            sessionRow(session, section: section)
                         }
                     }
                 }
             }
-            .padding(.horizontal, 20).padding(.top, 31).padding(.bottom, 18)
+            .padding(.horizontal, 20).padding(.top, 18).padding(.bottom, 18)
         }
         .scrollDismissesKeyboard(.interactively)
         .refreshable { await store.refresh() }
@@ -228,9 +483,90 @@ struct HomeView: View {
         }
     }
 
-    private func sessionRow(_ session: RemoteSession) -> some View {
-        let actions = sessionActions(for: session)
-        return Button { store.setUnread(false, sessionID: session.id); store.path.append(.session(session.id)) } label: {
+    @ViewBuilder private var emptyState: some View {
+        if !search.isEmpty {
+            ContentUnavailableView("没有找到聊天", systemImage: "magnifyingglass",
+                                   description: Text("试试其他任务名称、项目或设备名称。"))
+                .padding(.top, 70)
+        } else if let selectedDevice, !selectedDevice.isActive {
+            ContentUnavailableView {
+                Label("还没有同步到任务", systemImage: "desktopcomputer")
+            } description: {
+                Text("连接后可以查看这台电脑上的项目和对话。")
+            } actions: {
+                if let workspace = selectedDevice.workspaces.first {
+                    Button("连接 \(selectedDevice.name)") {
+                        connectRequest = ConnectRequest(profile: workspace.profile,
+                                                        deviceName: selectedDevice.name,
+                                                        workspaceTitle: workspace.title)
+                    }.buttonStyle(.borderedProminent).buttonBorderShape(.capsule)
+                }
+            }.padding(.top, 70)
+        } else if selectedDevice?.isActive == true && !store.connection.isOnline {
+            ContentUnavailableView {
+                Label("连接暂时中断", systemImage: "wifi.exclamationmark")
+            } description: {
+                Text("任务保存在电脑上。网络恢复后会自动重新连接。")
+            } actions: {
+                Button("立即重试") { Task { await store.retryConnectionNow() } }
+                    .buttonStyle(.borderedProminent).buttonBorderShape(.capsule)
+            }.padding(.top, 70)
+        } else {
+            ContentUnavailableView {
+                Label("还没有任务", systemImage: "bubble.left.and.bubble.right")
+            } description: {
+                Text("创建一个任务，从手机继续你的工作。")
+            } actions: {
+                Button("新建聊天") { store.path.append(.newSession) }
+                    .buttonStyle(.borderedProminent).buttonBorderShape(.capsule)
+                    .disabled(!store.connection.isOnline)
+            }.padding(.top, 70)
+        }
+    }
+
+    private func sectionHeader(_ section: HomeSection, first: Bool) -> some View {
+        HStack(spacing: 8) {
+            Button {
+                withAnimation(.easeInOut(duration: 0.2)) {
+                    if collapsed.contains(section.id) { collapsed.remove(section.id) }
+                    else { collapsed.insert(section.id) }
+                }
+            } label: {
+                Image(systemName: "chevron.down")
+                    .font(.system(size: 9, weight: .semibold))
+                    .foregroundStyle(.secondary)
+                    .rotationEffect(.degrees(collapsed.contains(section.id) ? -90 : 0))
+                    .frame(width: 14, height: 30)
+            }.buttonStyle(.plain)
+            Image(systemName: "folder")
+                .font(.system(size: 15, weight: .medium)).foregroundStyle(.secondary)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(section.projectName).font(.system(size: 17, weight: .semibold)).lineLimit(1)
+                if selectedDeviceID == nil || section.device.workspaces.count > 1 {
+                    Text("\(section.device.name) · \(section.workspace.title)")
+                        .font(.system(size: 11)).foregroundStyle(.secondary).lineLimit(1)
+                }
+            }
+            Spacer()
+            Text("\(section.sessions.count)")
+                .font(.system(size: 12, weight: .medium)).foregroundStyle(.tertiary)
+            if !section.workspace.isActive {
+                Button("连接") {
+                    connectRequest = ConnectRequest(profile: section.workspace.profile,
+                                                    deviceName: section.device.name,
+                                                    workspaceTitle: section.workspace.title)
+                }
+                .font(.system(size: 12, weight: .semibold))
+                .buttonStyle(.bordered).buttonBorderShape(.capsule).controlSize(.mini)
+            }
+        }
+        .padding(.top, first ? 4 : 26).padding(.bottom, 10)
+    }
+
+    private func sessionRow(_ session: RemoteSession, section: HomeSection) -> some View {
+        let active = section.workspace.isActive
+        let actions = sessionActions(for: session, active: active)
+        return Button { open(session, in: section) } label: {
             VStack(alignment: .leading, spacing: 6.666667) {
                 HStack(spacing: 8) {
                     if session.status == .running { StatusDot(status: session.status) }
@@ -247,8 +583,14 @@ struct HomeView: View {
                             FolderGlyph().stroke(style: StrokeStyle(lineWidth: 1.4, lineCap: .round, lineJoin: .round))
                         }
                     }.frame(width: 14, height: 14).frame(width: 16).offset(y: -0.666667)
-                    Text(session.projectName).font(.system(size: 13)).lineLimit(1)
+                    Text(selectedDeviceID == nil ? section.device.name : section.workspace.title)
+                        .font(.system(size: 13)).lineLimit(1)
+                    Text("·").font(.system(size: 13))
+                    Text(session.updatedAt, style: .relative).font(.system(size: 13)).lineLimit(1)
                     Spacer()
+                    if !active {
+                        Image(systemName: "icloud.slash").font(.system(size: 11)).foregroundStyle(.tertiary)
+                    }
                     if session.additions > 0 || session.deletions > 0 {
                         ChangeCount(additions: session.additions, deletions: session.deletions)
                     }
@@ -261,9 +603,9 @@ struct HomeView: View {
         .measureLayout("row.\(session.id)")
         .overlay {
             SessionContextInteraction(title: session.title,
-                identity: "\(store.isReferenceMode)|\(store.activeProfileID ?? "")|\(store.activeProfile?.baseURL ?? "")|\(session.id)",
+                identity: "\(connectionScope)|\(section.workspace.id)|\(active)|\(session.id)",
                 preview: AnyView(ConversationPreview(sessionID: session.id).environment(store)),
-                actions: actions, open: { store.setUnread(false, sessionID: session.id); store.path.append(.session(session.id)) })
+                actions: actions, open: { open(session, in: section) })
                 .accessibilityHidden(true)
         }
         .accessibilityActions {
@@ -271,18 +613,33 @@ struct HomeView: View {
                 Button(action.item.title) { action.perform() }.disabled(!action.item.isEnabled)
             }
         }
-        // Refresh the AX owner, whose custom actions can outlive their builder.
-        // The outer ForEach still identifies and orders rows by session.id.
-        .id(SessionRowIdentity(scope: connectionScope, sessionID: session.id,
+        .id(SessionRowIdentity(scope: connectionScope + "|" + section.workspace.id + "|" + String(active),
+                               sessionID: session.id,
                                actions: actions.map(\.accessibilityIdentity)))
     }
 
-    private func sessionActions(for session: RemoteSession) -> [SessionContextAction] {
-        let scope = connectionScope
+    private func open(_ session: RemoteSession, in section: HomeSection) {
+        if section.workspace.isActive {
+            if store.connection.isOnline {
+                store.setUnread(false, sessionID: session.id)
+                store.path.append(.session(session.id))
+            } else {
+                Task { await store.switchAndOpen(section.workspace.profile, sessionID: session.id) }
+            }
+        } else {
+            pendingOpen = PendingOpen(profile: section.workspace.profile, sessionID: session.id,
+                                      title: session.title, deviceName: section.device.name,
+                                      workspaceTitle: section.workspace.title)
+        }
+    }
+
+    private func sessionActions(for session: RemoteSession, active: Bool) -> [SessionContextAction] {
+        let scope = connectionScope + "|" + String(active)
         let pinned = !session.isPinned, archived = !session.isArchived, unread = !store.isUnread(session.id)
-        return menuItems(for: session).map { item in
+        return menuItems(for: session, active: active).map { item in
             SessionContextAction(item: item) {
-                guard item.isEnabled, scope == connectionScope, let current = store.session(session.id),
+                guard item.isEnabled, active, scope.hasPrefix(connectionScope),
+                      let current = store.session(session.id),
                       menuItems(for: current).contains(item) else { return }
                 switch item.id {
                 case .pin: store.setPinned(pinned, sessionID: session.id)
@@ -303,7 +660,9 @@ struct HomeView: View {
                     ForEach(store.profiles) { profile in
                         Button {
                             if profile.isRelay && !(store.activeProfile == profile && store.connection.isOnline && !store.isReferenceMode) {
-                                computerToConfirm = profile
+                                connectRequest = ConnectRequest(profile: profile,
+                                                                deviceName: profile.name,
+                                                                workspaceTitle: profile.relayWorkspaceKey?.split(separator: "/").last.map(String.init) ?? profile.baseURL)
                             } else {
                                 search = ""; collapsed = []
                                 Task { await store.switchComputer(profile) }
@@ -356,11 +715,11 @@ struct HomeView: View {
                 if store.activeProfile != nil {
                     Button {
                         if store.activeProfile?.isRelay == true { confirmRelayReconnect = true }
-                        else { Task { await store.refresh() } }
+                        else { Task { await store.retryConnectionNow() } }
                     } label: {
-                        if store.connection == .connecting { ProgressView().frame(width: 78, height: 26) }
+                        if store.connection == .connecting || store.isAutoReconnecting { ProgressView().frame(width: 78, height: 26) }
                         else { Text("重新连接").frame(width: 78, height: 26) }
-                    }.buttonStyle(NativeGlassButtonStyle()).disabled(store.connection == .connecting)
+                    }.buttonStyle(NativeGlassButtonStyle()).disabled(store.connection == .connecting || store.isAutoReconnecting)
                 } else {
                     Button("添加连接") { store.sheet = .pairing }
                         .buttonStyle(NativeGlassButtonStyle()).controlSize(.large)
@@ -371,13 +730,5 @@ struct HomeView: View {
             }.foregroundStyle(.secondary).padding(.horizontal, 28)
             Spacer()
         }.frame(maxWidth: .infinity)
-    }
-
-    private func groupTitle(_ date: Date) -> String {
-        let calendar = Calendar.current
-        if calendar.isDateInToday(date) { return "今天" }
-        if calendar.isDateInYesterday(date) { return "昨天" }
-        if (calendar.dateComponents([.day], from: date, to: .now).day ?? 100) < 7 { return "过去 7 天" }
-        return "更早"
     }
 }

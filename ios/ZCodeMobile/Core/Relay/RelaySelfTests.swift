@@ -181,8 +181,11 @@ actor MockRelaySocket: RelaySocketTransport {
     func snapshot(_ sessionID: String) -> RelayJSON {
         let visibleThought = staleConfigurationReads > 0 ? "max" : configurationThought
         if configurationThought != "max", staleConfigurationReads > 0 { staleConfigurationReads -= 1 }
-        let model: RelayJSON = .object(["providerId": .string("host-provider"), "modelId": .string("host-model")])
-        return .object(["session": .object(["sessionId": .string(sessionID), "title": .string(titles[sessionID] ?? "Original desktop task"), "status": .string("completed")]), "settings": .object(["model": .object(["current": model, "available": .array([.object(["ref": model, "label": .string("Host model"), "reasoning": .object(["levels": .array([.object(["value": .string("max")]), .object(["value": .string("high")])])]), "supportsImages": .bool(imagesSupported), "supportsPdf": .bool(false)])])]), "thoughtLevel": .object(["current": .string(visibleThought), "available": .array([.object(["value": .string("max")]), .object(["value": .string("high")])])]), "mode": .object(["current": .string(configurationMode)])]), "messages": .array([]), "runtime": .object([:])])
+        let ref: RelayJSON = .object(["providerId": .string("host-provider"), "modelId": .string("host-model")])
+        // Real desktops can include extra fields in `current` that are absent
+        // from the catalog's compact `ref`; identity must still match.
+        let model: RelayJSON = .object(["providerId": .string("host-provider"), "modelId": .string("host-model"), "options": .object(["thoughtLevel": .string("high")])])
+        return .object(["session": .object(["sessionId": .string(sessionID), "title": .string(titles[sessionID] ?? "Original desktop task"), "status": .string("completed")]), "settings": .object(["model": .object(["current": model, "available": .array([.object(["ref": ref, "label": .string("Host model"), "reasoning": .object(["levels": .array([.object(["value": .string("max")]), .object(["value": .string("high")])])]), "supportsImages": .bool(imagesSupported), "supportsPdf": .bool(false)])])]), "thoughtLevel": .object(["current": .string(visibleThought), "available": .array([.object(["value": .string("max")]), .object(["value": .string("high")])])]), "mode": .object(["current": .string(configurationMode)])]), "messages": .array([]), "runtime": .object([:])])
     }
     private func completeConversationSubscription(_ id: Int32, params: RelayJSON) throws {
         var projection = try (alternateProjection ?? baseProjection()).requiringObject()

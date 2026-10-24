@@ -31,8 +31,16 @@ struct SettingsView: View {
                 Toggle("显示时间", isOn: $store.showTimestamps)
                 Toggle("显示上下文用量", isOn: $store.showContextUsage)
                     .accessibilityIdentifier("settings.contextUsage")
-                Toggle("任务完成通知", isOn: $store.completionNotifications)
+            }
+            Section {
+                Toggle("任务通知", isOn: $store.completionNotifications)
                     .accessibilityIdentifier("settings.completionNotifications")
+                Toggle("灵动岛实时状态", isOn: $store.liveActivitiesEnabled)
+                    .accessibilityIdentifier("settings.liveActivities")
+            } header: {
+                Text("通知与实时活动")
+            } footer: {
+                Text("任务完成、等待确认或出错时提醒。灵动岛会持续显示正在运行的任务和计时。iOS 不允许普通 App 在后台长期保持连接，因此 App 被系统挂起后，状态更新会在再次打开 App 时恢复；完全后台的实时提醒需要电脑端或中转服务支持推送。")
             }
             Section("连接") {
                 LabeledContent("电脑", value: store.hostName)
@@ -53,7 +61,7 @@ struct SettingsView: View {
                 }
             }
             Section("关于") {
-                LabeledContent("ZCode Mobile", value: "1.0")
+                LabeledContent("ZCode Mobile", value: Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "1.0.3")
                 Text("使用原生 SwiftUI 与 Apple Liquid Glass 构建。")
                     .font(.footnote).foregroundStyle(.secondary)
                 if !store.isReferenceMode {
@@ -75,6 +83,7 @@ struct SettingsView: View {
             store.savePreferences()
             if store.completionNotifications { Task { await TaskNotifications.shared.requestAuthorizationIfNeeded() } }
         }
+        .onChange(of: store.liveActivitiesEnabled) { store.savePreferences() }
     }
 }
 

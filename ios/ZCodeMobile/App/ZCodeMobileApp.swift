@@ -51,24 +51,29 @@ final class TaskNotifications: NSObject, UNUserNotificationCenterDelegate, @unch
     }
 
     func requestAuthorizationIfNeeded() async {
+        #if DEBUG
+        let arguments = ProcessInfo.processInfo.arguments
+        if arguments.contains("--relay-test-pair") || arguments.contains("--live-activity-review") { return }
+        #endif
         let center = UNUserNotificationCenter.current()
         let settings = await center.notificationSettings()
         guard settings.authorizationStatus == .notDetermined else { return }
-        _ = try? await center.requestAuthorization(options: [.alert, .sound])
+        _ = try? await center.requestAuthorization(options: [.alert, .sound, .badge])
     }
 
-    func postCompletion(sessionID: String, title: String) async {
+    func post(_ event: TaskNotificationEvent) async {
         let center = UNUserNotificationCenter.current()
         let settings = await center.notificationSettings()
         guard settings.authorizationStatus == .authorized || settings.authorizationStatus == .provisional,
               settings.alertSetting == .enabled else { return }
         let content = UNMutableNotificationContent()
-        content.title = title.isEmpty ? "任务" : title
-        content.body = "电脑上的任务已完成。"
+        content.title = event.title.isEmpty ? "任务" : event.title
+        content.body = event.body
         content.sound = .default
-        content.userInfo = ["sessionID": sessionID]
-        let request = UNNotificationRequest(identifier: "task-complete-" + sessionID + "-" + UUID().uuidString,
-                                            content: content, trigger: nil)
+        content.userInfo = ["sessionID": event.sessionID]
+        let request = UNNotificationRequest(
+            identifier: "task-\(event.kind.rawValue)-\(event.sessionID)-\(UUID().uuidString)",
+            content: content, trigger: nil)
         try? await center.add(request)
     }
 

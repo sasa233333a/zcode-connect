@@ -7,12 +7,16 @@ import UIKit
 /// without a console attachment. The simulator can write to the host filesystem.
 enum RelayTestLog {
     static func write(_ text: String) {
-        let url = URL(fileURLWithPath: "/tmp/relaytest/state.log")
-        if !FileManager.default.fileExists(atPath: url.path) { FileManager.default.createFile(atPath: url.path, contents: nil) }
-        if let handle = try? FileHandle(forWritingTo: url) {
-            handle.seekToEndOfFile()
-            try? handle.write(contentsOf: Data(((Date().formatted(.dateTime.hour().minute().second())) + " " + text + "\n").utf8))
-            try? handle.close()
+        let line = (Date().formatted(.dateTime.hour().minute().second())) + " " + text + "\n"
+        let urls = [URL(fileURLWithPath: "/tmp/relaytest/state.log"),
+                    URL.documentsDirectory.appending(path: "relay-test-state.log")]
+        for url in urls {
+            if !FileManager.default.fileExists(atPath: url.path) { FileManager.default.createFile(atPath: url.path, contents: nil) }
+            if let handle = try? FileHandle(forWritingTo: url) {
+                handle.seekToEndOfFile()
+                try? handle.write(contentsOf: Data(line.utf8))
+                try? handle.close()
+            }
         }
     }
 }
@@ -69,6 +73,9 @@ final class AppStore {
     var selectedProjectID: String?
     var appearance = "跟随系统"
     var hapticsEnabled = true
+    var liveActivitiesEnabled = true
+    var reconnectAttempt = 0
+    var isAutoReconnecting = false
     private struct CachedReadingState: Codable {
         var savedAt: Date
         var sessions: [RemoteSession]
@@ -205,6 +212,14 @@ final class AppStore {
     @ObservationIgnored private var pinnedIDs: Set<String> = []
     @ObservationIgnored private var archivedIDs: Set<String> = []
     @ObservationIgnored private let defaults: UserDefaults
+    @ObservationIgnored private var profileReadingStates: [String: CachedReadingState] = [:]
+    @ObservationIgnored private let networkMonitor = NetworkMonitor()
+    @ObservationIgnored private var pendingOpenSessionID: String?
+    @ObservationIgnored private var notifiedInteractionIDs: Set<String> = []
+    @ObservationIgnored private var notifiedWaitingSessionIDs: Set<String> = []
+    @ObservationIgnored var notificationEventSink: ((TaskNotificationEvent) -> Void)?
+    /// Called whenever task status changes, independent of SwiftUI view updates.
+    @ObservationIgnored var activitySyncSink: (() -> Void)?
 
     init(defaults: UserDefaults = .standard,
          reconnectDelay: @escaping @Sendable (Duration) async throws -> Void = { try await Task.sleep(for: $0) }) {
@@ -225,10 +240,12 @@ final class AppStore {
         hapticsEnabled = defaults.object(forKey: "haptics") as? Bool ?? true
         showContextUsage = defaults.object(forKey: "showContextUsage") as? Bool ?? true
         showTimestamps = defaults.object(forKey: "timestamps") as? Bool ?? true
+        liveActivitiesEnabled = defaults.object(forKey: "liveActivities") as? Bool ?? true
         completionNotifications = defaults.object(forKey: "completionNotifications") as? Bool ?? true
 
         do { try loadScopedState() }
         catch { errorMessage = "无法恢复待发送消息：\(error.localizedDescription)" }
+        reloadProfileReadingStates()
 
         #if DEBUG
         let args = ProcessInfo.processInfo.arguments
@@ -338,11 +355,12 @@ final class AppStore {
     private func loadScopedState() throws {
         transcriptLastLoaded = [:]; transcriptLoading = []; transcriptLoadingOwners = [:]; transcriptLoadErrors = [:]
         let cache = decode([String: CachedTranscript].self, key: scopedKey("transcriptCache.v1")) ?? [:]
-        if sessions.isEmpty, let state = decode(CachedReadingState.self, key: scopedKey("readingState.v1")),
-           Date().timeIntervalSince(state.savedAt) < 7 * 86400 {
+        let savedState = decode(CachedReadingState.self, key: scopedKey("readingState.v1"))
+        if sessions.isEmpty, let state = savedState, Date().timeIntervalSince(state.savedAt) < 7 * 86400 {
             sessions = state.sessions; projects = state.projects; hostName = state.hostName
             if path.isEmpty, let id = state.sessionID, sessions.contains(where: { $0.id == id }) { path = [.session(id)] }
         }
+        if let id = activeProfileID, let savedState { profileReadingStates[id] = savedState }
         cachedTranscriptIDs = []
         for (id, entry) in cache where Date().timeIntervalSince(entry.savedAt) < 7 * 86400 {
             if transcripts[id]?.isEmpty != false { transcripts[id] = entry.messages; cachedTranscriptIDs.insert(id) }
@@ -380,7 +398,66 @@ final class AppStore {
         let state = CachedReadingState(savedAt: .now, sessions: Array(sessions.prefix(500)),
             projects: projects, sessionID: currentSessionID, hostName: hostName)
         save(state, key: scopedKey("readingState.v1"))
+        profileReadingStates[activeProfileID ?? ""] = state
         if let id = currentSessionID { cacheTranscript(id) }
+    }
+
+    private func profileCacheKey(_ profile: ConnectionProfile) -> String {
+        "\(profile.id)|\(profile.baseURL)|readingState.v1"
+    }
+
+    private func reloadProfileReadingStates() {
+        var states: [String: CachedReadingState] = [:]
+        for profile in profiles {
+            if let state = decode(CachedReadingState.self, key: profileCacheKey(profile)),
+               Date().timeIntervalSince(state.savedAt) < 7 * 86400 {
+                states[profile.id] = state
+            }
+        }
+        profileReadingStates = states
+    }
+
+    static func deviceIdentity(for profile: ConnectionProfile) -> String {
+        if let deviceID = profile.relayDeviceID, !deviceID.isEmpty {
+            let service = profile.relayServiceID ?? profile.baseURL
+            return "relay|\(service)|\(deviceID)"
+        }
+        return "http|\(profile.baseURL)"
+    }
+
+    /// Devices are grouped by their stable desktop identity, even when the user
+    /// saved several workspaces from the same computer. The catalog keeps live
+    /// data for the active profile and the last known tasks for the others.
+    var homeDeviceGroups: [HomeDeviceGroup] {
+        let grouped = Dictionary(grouping: profiles, by: Self.deviceIdentity(for:))
+        return grouped.map { identity, members in
+            let active = members.first { $0.id == activeProfileID }
+            let workspaces = members.map { profile -> HomeWorkspaceGroup in
+                let isActive = !isReferenceMode && profile.id == activeProfileID
+                let cached = profileReadingStates[profile.id]
+                let sessions = isActive ? self.sessions : (cached?.sessions ?? [])
+                let projects = isActive ? self.projects : (cached?.projects ?? [])
+                let path = profile.relayWorkspaceKey ?? projects.first?.path ?? profile.baseURL
+                let title = isActive
+                    ? (projects.first?.name ?? (path as NSString).lastPathComponent)
+                    : (cached?.projects.first?.name ?? (path as NSString).lastPathComponent)
+                return HomeWorkspaceGroup(id: profile.id, profile: profile, title: title, path: path,
+                                          isActive: isActive, isConnected: isActive && connection.isOnline,
+                                          cachedAt: cached?.savedAt, sessions: sessions, projects: projects)
+            }.sorted { lhs, rhs in
+                if lhs.isActive != rhs.isActive { return lhs.isActive }
+                if lhs.title != rhs.title { return lhs.title.localizedStandardCompare(rhs.title) == .orderedAscending }
+                return lhs.id < rhs.id
+            }
+            return HomeDeviceGroup(id: identity,
+                                   name: active?.name ?? members.first?.name ?? "电脑",
+                                   isActive: active != nil,
+                                   connection: active != nil ? connection : nil,
+                                   workspaces: workspaces)
+        }.sorted { lhs, rhs in
+            if lhs.isActive != rhs.isActive { return lhs.isActive }
+            return lhs.name.localizedStandardCompare(rhs.name) == .orderedAscending
+        }
     }
 
     private func cacheTranscript(_ id: String) {
@@ -425,10 +502,9 @@ final class AppStore {
     }
     var canManageGoals: Bool { isReferenceMode }
 
-    // MARK: Index watch & completion notifications
+    // MARK: Index watch & task notifications
 
     var completionNotifications = true
-    @ObservationIgnored var completionEventSink: ((String, String) -> Void)?
     @ObservationIgnored private var indexWatchTask: Task<Void, Never>?
     @ObservationIgnored private var pendingNotificationSessionID: String?
 
@@ -453,8 +529,27 @@ final class AppStore {
 
     func openFromNotification(_ sessionID: String) {
         guard !isReferenceMode else { return }
-        if session(sessionID) != nil { path = [.session(sessionID)] }
-        else { pendingNotificationSessionID = sessionID }
+        openSessionEverywhere(sessionID)
+    }
+
+    /// A notification or Live Activity can outlive a switch to another saved
+    /// computer. Reconnect to the workspace that owns the session before routing.
+    func openSessionEverywhere(_ sessionID: String) {
+        guard !isReferenceMode else { return }
+        if session(sessionID) != nil { path = [.session(sessionID)]; return }
+        if let workspace = homeDeviceGroups.flatMap(\.workspaces).first(where: {
+            $0.sessions.contains { $0.id == sessionID }
+        }) {
+            Task { await switchAndOpen(workspace.profile, sessionID: sessionID) }
+            return
+        }
+        pendingNotificationSessionID = sessionID
+    }
+
+    func openDeepLink(_ url: URL) {
+        guard url.scheme?.lowercased() == "zcodemobile", url.host == "session",
+              let id = url.pathComponents.dropFirst().first, !id.isEmpty else { return }
+        openFromNotification(String(id))
     }
 
     private func consumePendingNotification() {
@@ -463,12 +558,41 @@ final class AppStore {
         if session(id) != nil { path = [.session(id)] }
     }
 
-    /// Only a live transition into completed notifies: loading history that was
-    /// already complete, or watching the session itself, must stay silent.
-    private func notifyCompletion(id: String, previous: SessionStatus?, current: SessionStatus) {
-        guard !isReferenceMode, current == .completed, previous != nil, previous != .completed,
+    /// Only a live transition notifies: loading history that was already in a
+    /// terminal state, or watching that session itself, must stay silent.
+    private func notifyTransition(id: String, previous: SessionStatus?, current: SessionStatus) {
+        guard completionNotifications, !isReferenceMode, let previous, previous != current,
               !isApplicationActive || currentSessionID != id else { return }
-        completionEventSink?(id, sessions.first { $0.id == id }?.title ?? hostName)
+        let title = sessions.first { $0.id == id }?.title ?? hostName
+        switch current {
+        case .completed:
+            notifiedWaitingSessionIDs.remove(id)
+            notificationEventSink?(.init(kind: .completed, sessionID: id, title: title,
+                                         body: "电脑上的任务已完成。"))
+        case .waiting:
+            // The status event and the interaction event usually arrive back to
+            // back; only the first one should surface a banner.
+            guard notifiedWaitingSessionIDs.insert(id).inserted else { return }
+            notificationEventSink?(.init(kind: .waiting, sessionID: id, title: title,
+                                         body: "电脑上的任务正在等待你的确认。"))
+        case .failed:
+            notifiedWaitingSessionIDs.remove(id)
+            notificationEventSink?(.init(kind: .failed, sessionID: id, title: title,
+                                         body: "任务遇到问题，请打开查看。"))
+        default:
+            notifiedWaitingSessionIDs.remove(id)
+        }
+    }
+
+    /// A new approval or input request is actionable even when the task status
+    /// itself was already "waiting"; dedupe per interaction instead of per status.
+    private func notifyInteraction(id: String, interaction: PendingInteraction) {
+        guard completionNotifications, !isReferenceMode, !isApplicationActive || currentSessionID != id,
+              notifiedWaitingSessionIDs.insert(id).inserted,
+              notifiedInteractionIDs.insert(id + "|" + interaction.id).inserted else { return }
+        let title = sessions.first { $0.id == id }?.title ?? hostName
+        notificationEventSink?(.init(kind: .waiting, sessionID: id, title: title,
+                                     body: interaction.title.isEmpty ? "任务在等待你的确认。" : interaction.title))
     }
 
     func start() async {
@@ -492,12 +616,18 @@ final class AppStore {
         }
         #endif
         #if DEBUG
+        let flags = ProcessInfo.processInfo.arguments.filter { $0.hasPrefix("--") }
+        RelayTestLog.write("start flags " + flags.joined(separator: " "))
         if let path = relayTestAccountFilePath() { await importRelayTestAccount(path: path) }
         if let (pairURL, shouldOpen) = relayTestArguments() {
             await runRelayTestPairing(url: pairURL, openFirstTask: shouldOpen)
             return
         }
         #endif
+        networkMonitor.onAvailable = { [weak self] in
+            Task { await self?.networkDidBecomeAvailable() }
+        }
+        networkMonitor.start()
         await restoreSavedConnection()
     }
 
@@ -563,6 +693,18 @@ final class AppStore {
             let context = try await beginRelayPairing(url, confirmedControllerReplacement: true)
             RelayTestLog.write("filled " + relayWorkspaces.map { "\($0.canAttach ? "1" : "0"):\(($0.workspacePath as NSString).lastPathComponent)" }.joined(separator: ", "))
             RelayTestLog.write("match " + relayWorkspaces.map { $0.workspacePath.contains("zocode connect") ? "1" : "0" }.joined(separator: ","))
+            if ProcessInfo.processInfo.arguments.contains("--relay-test-pair-all") {
+                for workspace in relayWorkspaces where workspace.canAttach {
+                    do {
+                        try await completeRelayPairing(workspaceKey: workspace.id, name: "", context: context)
+                        RelayTestLog.write("all workspace \((workspace.workspacePath as NSString).lastPathComponent) sessions=\(sessions.count) online=\(connection.isOnline)")
+                    } catch {
+                        RelayTestLog.write("all workspace \((workspace.workspacePath as NSString).lastPathComponent) failed \(error.localizedDescription)")
+                    }
+                }
+                if openFirstTask { await relayTestOpenFirstTask() }
+                return
+            }
             let workspace = relayWorkspaces.first(where: { $0.workspacePath.contains("zocode connect") })
                 ?? (relayWorkspaces.count > 1 ? relayWorkspaces[1] : nil)
                 ?? relayWorkspaces.first(where: { $0.canAttach }) ?? relayWorkspaces.first
@@ -571,6 +713,9 @@ final class AppStore {
             try await completeRelayPairing(workspaceKey: workspace.id, name: "", context: context)
             RelayTestLog.write("connected sessions=\(sessions.count) online=\(connection.isOnline)")
             if openFirstTask { await relayTestOpenFirstTask() }
+            if ProcessInfo.processInfo.arguments.contains("--relay-test-image") {
+                await relayTestUploadImage()
+            }
         } catch {
             let failure = error as? RelayFailure
             let bridge = error as? BridgeFailure
@@ -595,6 +740,33 @@ final class AppStore {
             try? await Task.sleep(for: .milliseconds(200))
         }
     }
+
+    /// Exercises the exact composer upload route on a real desktop, including
+    /// the fresh host modality guard, without sending a chat message.
+    private func relayTestUploadImage() async {
+        for _ in 0..<50 {
+            if let client, let id = currentSessionID {
+                struct Upload: Decodable, Sendable {
+                    struct Value: Decodable, Sendable { var id: String }
+                    var attachment: Value
+                }
+                do {
+                    let result: Upload = try await client.mutate("v1/sessions/\(id)/attachments", body: [
+                        "fileName": .string("relay-test.png"),
+                        "mimeType": .string("image/png"),
+                        "base64": .string("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGP4z8AAAAMBAQDJ/pLvAAAAAElFTkSuQmCC")
+                    ])
+                    RelayTestLog.write("image upload ok id=\(result.attachment.id)")
+                } catch {
+                    let failure = error as? RelayFailure
+                    RelayTestLog.write("image upload failed [\(failure?.code ?? "error")] \(failure?.message ?? error.localizedDescription)")
+                }
+                return
+            }
+            try? await Task.sleep(for: .milliseconds(200))
+        }
+        RelayTestLog.write("image upload failed no session")
+    }
     #endif
 
     func applicationDidBecomeActive() async {
@@ -603,7 +775,7 @@ final class AppStore {
         if !wasActive { automaticConnectionAttempt = 0 }
         guard !isReferenceMode else { return }
         refreshRelayAccountIfChanged()
-        if let task = automaticConnectionTask { await task.value; return }
+        if isAutoReconnecting { return }
         if connection.isOnline, client != nil {
             if indexWatchTask == nil { startIndexWatch() }
             await refresh()
@@ -625,6 +797,33 @@ final class AppStore {
         automaticConnectionGeneration = UUID()
         automaticConnectionTask?.cancel()
         automaticConnectionTask = nil
+        isAutoReconnecting = false
+        reconnectAttempt = 0
+    }
+
+    /// The path monitor owns the "network is back" edge. Skip the remaining
+    /// backoff and retry now; the generation change invalidates any sleeping loop.
+    func networkDidBecomeAvailable() async {
+        guard !isReferenceMode, isApplicationActive, let profile = activeProfile,
+              automaticConnectionBlocks[profile.id] == nil else { return }
+        if automaticConnectionTask != nil { cancelAutomaticConnection() }
+        guard !connection.isOnline else { return }
+        automaticConnectionAttempt = 0
+        await restoreSavedConnection()
+    }
+
+    /// User-initiated retry from the reconnect banner. This is distinct from the
+    /// automatic loop: it clears a paused block and starts a fresh attempt now.
+    func retryConnectionNow() async {
+        guard let profile = activeProfile else { return }
+        cancelAutomaticConnection()
+        automaticConnectionAttempt = 0
+        setAutomaticConnectionBlock(nil, profileID: profile.id)
+        if profile.isRelay {
+            await connect(profile, confirmedControllerReplacement: true)
+        } else {
+            await connect(profile)
+        }
     }
 
     private func setAutomaticConnectionBlock(_ reason: String?, profileID: String) {
@@ -654,30 +853,44 @@ final class AppStore {
             : Self.connectionErrorMessage(error)
         if !Self.retryableConnectionFailure(error) { setAutomaticConnectionBlock(code, profileID: profile.id) }
         connection = .failed(message)
-        if reportFailure || !Self.retryableConnectionFailure(error) { errorMessage = message }
+        // Automatic stream failures stay in the reconnect banner instead of
+        // stacking a second modal alert on top of the task list.
+        if reportFailure { errorMessage = message }
+    }
+
+    private static func reconnectDelay(for attempt: Int) -> Duration {
+        let seconds = min(30.0, pow(2.0, Double(max(0, attempt - 1))))
+        return .seconds(seconds)
     }
 
     private func restoreSavedConnection() async {
         guard !isReferenceMode, isApplicationActive, let profile = activeProfile,
               automaticConnectionBlocks[profile.id] == nil, relayWorkspaceSelection == nil else { return }
-        if let task = automaticConnectionTask { await task.value; return }
+        guard automaticConnectionTask == nil else { return }
         guard !connection.isOnline, connection != .connecting else { return }
         guard profile.isRelay else { await connect(profile); return }
-        let delays: [Duration] = [.zero, .seconds(2), .seconds(5), .seconds(10)]
-        guard automaticConnectionAttempt < delays.count else { return }
         let generation = automaticConnectionGeneration
         let retainedPath = path
+        isAutoReconnecting = true
         automaticConnectionTask = Task { [weak self] in
             guard let self else { return }
-            defer { if generation == self.automaticConnectionGeneration { self.automaticConnectionTask = nil } }
+            defer {
+                if generation == self.automaticConnectionGeneration {
+                    self.automaticConnectionTask = nil
+                    self.isAutoReconnecting = false
+                    self.reconnectAttempt = 0
+                }
+            }
             while !Task.isCancelled, generation == self.automaticConnectionGeneration,
                   self.isApplicationActive, self.activeProfile == profile,
-                  self.automaticConnectionBlocks[profile.id] == nil,
-                  self.automaticConnectionAttempt < delays.count {
-                let delay = delays[self.automaticConnectionAttempt]
+                  self.automaticConnectionBlocks[profile.id] == nil {
                 self.automaticConnectionAttempt += 1
-                do { if delay != .zero { try await self.reconnectDelay(delay) } }
-                catch { return }
+                let attempt = self.automaticConnectionAttempt
+                self.reconnectAttempt = attempt
+                if attempt > 1 {
+                    do { try await self.reconnectDelay(Self.reconnectDelay(for: attempt - 1)) }
+                    catch { return }
+                }
                 guard !Task.isCancelled, generation == self.automaticConnectionGeneration,
                       self.isApplicationActive, self.activeProfile == profile else { return }
                 do {
@@ -686,6 +899,9 @@ final class AppStore {
                     try await self.connectSavedRelay(profile, reportFailure: false)
                     guard !Task.isCancelled, generation == self.automaticConnectionGeneration else { return }
                     if self.connection.isOnline, self.activeProfileID == profile.id {
+                        self.automaticConnectionAttempt = 0
+                        self.reconnectAttempt = 0
+                        self.isAutoReconnecting = false
                         self.path = retainedPath
                         if let id = self.currentSessionID { await self.loadTranscript(id) }
                     }
@@ -700,21 +916,23 @@ final class AppStore {
                 }
             }
         }
-        await automaticConnectionTask?.value
+        // The loop is intentionally long-lived and bounded only by app activity.
+        // Return immediately so foreground and refresh paths stay responsive.
     }
 
     private func relayStreamEnded(_ error: Error, epoch: UUID) {
         guard epoch == connectionEpoch, let profile = activeProfile, profile.isRelay else { return }
-        // Brief successful handshakes do not replenish the retry budget. A stable
-        // connection or a new foreground visit may start a new bounded cycle.
-        if let connectedAt, Date().timeIntervalSince(connectedAt) >= 30 { automaticConnectionAttempt = 1 }
+        // A stable connection starts the next cycle with a fresh budget. Brief
+        // handshakes keep the current count so a flapping desktop cannot spin.
+        if let connectedAt, Date().timeIntervalSince(connectedAt) >= 30 { automaticConnectionAttempt = 0 }
         relayConnectionFailed(error, profile: profile, reportFailure: false)
-        guard Self.retryableConnectionFailure(error), isApplicationActive else { return }
+        guard Self.retryableConnectionFailure(error), isApplicationActive else {
+            isAutoReconnecting = false
+            return
+        }
         let generation = automaticConnectionGeneration
         Task { [weak self] in
             guard let self, generation == self.automaticConnectionGeneration else { return }
-            if let task = self.automaticConnectionTask { await task.value }
-            guard generation == self.automaticConnectionGeneration else { return }
             await self.restoreSavedConnection()
         }
     }
@@ -786,6 +1004,23 @@ final class AppStore {
         await connect(profile, confirmedControllerReplacement: confirmedControllerReplacement)
     }
 
+    /// Open a task that belongs to a saved workspace which is not currently
+    /// attached. This is how a cached conversation from another project/device
+    /// becomes live again without re-scanning a QR code.
+    func switchAndOpen(_ profile: ConnectionProfile, sessionID: String) async {
+        guard profiles.contains(where: { $0.id == profile.id }) else { return }
+        pendingOpenSessionID = sessionID
+        if !(activeProfileID == profile.id && connection.isOnline) {
+            await switchComputer(profile, confirmedControllerReplacement: true)
+        }
+        if connection.isOnline, sessions.contains(where: { $0.id == sessionID }) {
+            path = [.session(sessionID)]
+        } else if connection.isOnline {
+            errorMessage = "没有找到这个任务，可能已在电脑上关闭或归档。"
+        }
+        pendingOpenSessionID = nil
+    }
+
     func connect(_ profile: ConnectionProfile, token: String? = nil, confirmedControllerReplacement: Bool = false) async {
         if profile.isRelay {
             guard confirmedControllerReplacement else { return }
@@ -802,6 +1037,10 @@ final class AppStore {
                     return
                 }
                 relayConnectionFailed(error, profile: profile, reportFailure: true)
+                if Self.retryableConnectionFailure(error), isApplicationActive,
+                   automaticConnectionBlocks[profile.id] == nil {
+                    await restoreSavedConnection()
+                }
             }
             return
         }
@@ -1053,7 +1292,9 @@ final class AppStore {
             try await loadRemoteIndex()
             guard !Task.isCancelled, isCurrentRelaySelection(context) else { throw CancellationError() }
             connectedAt = Date()
-            if automaticConnectionTask == nil { automaticConnectionAttempt = 1 }
+            automaticConnectionAttempt = 0
+            reconnectAttempt = 0
+            isAutoReconnecting = false
             setAutomaticConnectionBlock(nil, profileID: profile.id)
             relayWorkspaceSelection = nil
             beginStreaming()
@@ -1161,6 +1402,8 @@ final class AppStore {
         changingGoals = []
         loadingAgentDirectories = []; agentDirectoryErrors = [:]
         rejectedSubmissionIDs = []
+        notifiedInteractionIDs = []
+        notifiedWaitingSessionIDs = []
     }
 
     func removeConnection(_ profile: ConnectionProfile) {
@@ -1175,6 +1418,7 @@ final class AppStore {
         }
         defaults.removeObject(forKey: "\(profile.id)|\(profile.baseURL)|readingState.v1")
         defaults.removeObject(forKey: "\(profile.id)|\(profile.baseURL)|transcriptCache.v1")
+        profileReadingStates[profile.id] = nil
         CredentialStore.remove(profile.id)
         profiles.removeAll { $0.id == profile.id }
         save(profiles, key: "connections")
@@ -1268,6 +1512,7 @@ final class AppStore {
         sessions = merged
         models = modelResponse.models
         cacheReadingState()
+        activitySyncSink?()
         for session in sessionResponse.sessions {
             if remoteSettings[session.id] == nil, !changingSettings.contains(session.id), let provider = session.providerId, let model = session.model {
                 modelSelections[session.id] = ModelSelection(providerId: provider, modelId: model, thoughtLevel: session.thoughtLevel)
@@ -1275,6 +1520,10 @@ final class AppStore {
         }
         if !projects.contains(where: { $0.id == selectedProjectID }) { selectedProjectID = projects.first?.id }
         consumePendingNotification()
+        if let id = pendingOpenSessionID, sessions.contains(where: { $0.id == id }) {
+            pendingOpenSessionID = nil
+            path = [.session(id)]
+        }
         if !hasConnectedBefore {
             hasConnectedBefore = true
             defaults.set(true, forKey: "hasConnectedBefore")
@@ -2360,6 +2609,7 @@ final class AppStore {
         defaults.set(showContextUsage, forKey: "showContextUsage")
         defaults.set(showTimestamps, forKey: "timestamps")
         defaults.set(completionNotifications, forKey: "completionNotifications")
+        defaults.set(liveActivitiesEnabled, forKey: "liveActivities")
     }
     private func setStatus(_ id: String, _ status: SessionStatus) {
         eventRevision += 1
@@ -2370,7 +2620,8 @@ final class AppStore {
             sessions[i].updatedAt = .now
         }
         observeAnswerCompletion(id)
-        notifyCompletion(id: id, previous: previous, current: status)
+        notifyTransition(id: id, previous: previous, current: status)
+        activitySyncSink?()
     }
     private func upsert(_ session: RemoteSession) {
         if session.source == "official-relay-subagent" {
@@ -2381,7 +2632,8 @@ final class AppStore {
         if let i = sessions.firstIndex(where: { $0.id == session.id }) { sessions[i] = session }
         else { sessions.insert(session, at: 0) }
         observeAnswerCompletion(session.id)
-        notifyCompletion(id: session.id, previous: previous, current: session.status)
+        notifyTransition(id: session.id, previous: previous, current: session.status)
+        activitySyncSink?()
     }
     private func decorate(_ session: RemoteSession) -> RemoteSession {
         // Metadata always reflects the host. Legacy local preferences remain stored
@@ -2466,10 +2718,13 @@ final class AppStore {
                 interactionRevisions[id] = eventRevision
                 pendingInteractions[id, default: []].removeAll { $0.id == interaction.id }
                 pendingInteractions[id, default: []].append(interaction)
+                notifyInteraction(id: id, interaction: interaction)
+                activitySyncSink?()
             }
             if let interactionID = event.data?.interactionId {
                 interactionRevisions[id] = eventRevision
                 pendingInteractions[id]?.removeAll { $0.id == interactionID }
+                activitySyncSink?()
             }
             if event.type != "runtime.event" { dirtySessionIDs.insert(id) }
         }

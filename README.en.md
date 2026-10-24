@@ -17,7 +17,9 @@ It is an independently developed native iOS client with a Liquid Glass interface
 ## What you can do
 
 - **Pick up existing work**: open projects and tasks, continue conversations, and read replies and execution steps.
-- **Switch computers**: save connections to multiple computers and choose the one you need.
+- **Browse by computer and project**: switch computers at the top and see conversations grouped by project below. Other projects keep their last synced content and reconnect when opened.
+- **Automatic reconnection**: retry after network changes, returning to the foreground, or a brief relay interruption, with a manual retry in the banner.
+- **Notifications and Dynamic Island**: get notified when a task completes, waits for approval, or fails, and see the active task on the Dynamic Island and Lock Screen.
 - **Follow your agents**: view sub-agent progress and conversations as a task moves forward.
 - **Review files and changes**: browse project files and inspect changes made during a task.
 - **Keep your model setup**: available models and options come from the connected computer.
@@ -34,6 +36,8 @@ The App supports Simplified Chinese, English, Japanese, French, Korean, and Germ
 5. Choose a project, open a task, and carry on.
 
 **Your computer must stay awake and online, with ZCode running.** The App is free; your chosen model providers or third-party services may charge separately. Keep pairing codes and links private: they contain connection credentials.
+
+Notifications and Live Activity updates require the App to be running or recently backgrounded. iOS does not let a normal App keep a WebSocket alive indefinitely in the background: the Dynamic Island timer keeps counting after suspension, but status refreshes when you reopen the App. Fully background real-time alerts need push support (APNs) from the desktop or relay service.
 
 You do not need your own server to use the official relay. Self-hosting is an advanced option that requires a separately configured server and desktop. Cloning this repository does not set those up for you.
 
