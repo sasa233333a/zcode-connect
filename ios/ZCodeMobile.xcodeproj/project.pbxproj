@@ -29,6 +29,7 @@
 		4519DEE30434C59B18223197 /* TranscriptTurnView.swift in Sources */ = {isa = PBXBuildFile; fileRef = C81197D9F13433BFB751B83A /* TranscriptTurnView.swift */; };
 		455E512C82AB4CC51AB1BB09 /* RelayHostActivity.swift in Sources */ = {isa = PBXBuildFile; fileRef = 55B855FBD9BFF17DE9D5B234 /* RelayHostActivity.swift */; };
 		4899285A5F36C7C816E63E9C /* RelayHookReviewAdapterSelfTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B1A7AEF11C23B545FFA5CBB6 /* RelayHookReviewAdapterSelfTests.swift */; };
+		50CE9EA6918B9E07C25D3566 /* RelayLoginView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 71AA49FD4A665ACD4F702372 /* RelayLoginView.swift */; };
 		518615B966ECD03F745928BD /* RelayContextSelfTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D13DF83AC97883456DE30A23 /* RelayContextSelfTests.swift */; };
 		5E1FE493A5BA20D65E10C0F3 /* FloatingPanel.swift in Sources */ = {isa = PBXBuildFile; fileRef = E564BCFF93B17952315E5914 /* FloatingPanel.swift */; };
 		5E9144145B412ABB1191A589 /* WorkspaceHookReviewSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3BC69DB47BC6EE1CF2679C33 /* WorkspaceHookReviewSheet.swift */; };
@@ -58,6 +59,7 @@
 		A9CFFE490BAF1DEBB03A4252 /* RelaySessionPages.swift in Sources */ = {isa = PBXBuildFile; fileRef = D662DA4FFEF70F22E12102FC /* RelaySessionPages.swift */; };
 		ADF7266D8A3EF03743B5B147 /* ServerSentEvents.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0AD40E7A9A7CCB326C0D855C /* ServerSentEvents.swift */; };
 		BDBFD8FAE9AA68832030A701 /* MirrorSession.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9585CB3DB671B8321FD42FCC /* MirrorSession.swift */; };
+		BEA9F04903B0EC884EDCAC61 /* RelayAccount.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2FCEB09EF876DED561344005 /* RelayAccount.swift */; };
 		C170377B023262A68FD4FFBC /* RelayTranscriptSelfTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = BBF5FD46539D8104CE7816C7 /* RelayTranscriptSelfTests.swift */; };
 		C7FB2317951CE8058E900D87 /* AppStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = D53E608EC4C76B55D532A07D /* AppStore.swift */; };
 		CCCCE401F53D6B380E172FD6 /* RelayAgentGoalSelfTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1650BD18D480EE8324FEE664 /* RelayAgentGoalSelfTests.swift */; };
@@ -74,8 +76,6 @@
 		F35DE52E7A242279152E5BC4 /* TranscriptPresentation.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0A4253ECF92B25F2CB87964 /* TranscriptPresentation.swift */; };
 		F59C958C6A269E3249983DCA /* GlassCalibrationView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 913761FD591B8C9B396E94BF /* GlassCalibrationView.swift */; };
 		F5D6176169CEF477127BCC0C /* RelayClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = 17ADF86538C2ABF99B736DA8 /* RelayClient.swift */; };
-		B1C2D3E4F5061728394A5B6C /* RelayAccount.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D4E5F60718293A4B5C /* RelayAccount.swift */; };
-		D1E2F3A40516273849B5C6D7 /* RelayLoginView.swift in Sources */ = {isa = PBXBuildFile; fileRef = C1D2E3F40516273849A5B6C7 /* RelayLoginView.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -101,6 +101,7 @@
 		202BC01ACF9D25645498BFE1 /* ReferenceData.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReferenceData.swift; sourceTree = "<group>"; };
 		225CA0B05DD2A628608717DE /* InlineVoiceControls.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = InlineVoiceControls.swift; sourceTree = "<group>"; };
 		2CD15E50100F477B7A156853 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
+		2FCEB09EF876DED561344005 /* RelayAccount.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RelayAccount.swift; sourceTree = "<group>"; };
 		30B33762AB958F3D465C206F /* RelayFork.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RelayFork.swift; sourceTree = "<group>"; };
 		3ADEF78963A492551AD4C392 /* BridgeClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BridgeClient.swift; sourceTree = "<group>"; };
 		3B28AF1AA0E727F9197E2AF3 /* MirrorViews.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MirrorViews.swift; sourceTree = "<group>"; };
@@ -115,6 +116,7 @@
 		6393EF946CB87187784F0720 /* SettingsViews.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsViews.swift; sourceTree = "<group>"; };
 		67F99539FCFEA466DF66EF48 /* RelayAdapterJournal.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RelayAdapterJournal.swift; sourceTree = "<group>"; };
 		6E0938A2133E3D48B30D3017 /* AppShell.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppShell.swift; sourceTree = "<group>"; };
+		71AA49FD4A665ACD4F702372 /* RelayLoginView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RelayLoginView.swift; sourceTree = "<group>"; };
 		78D420C8B98F6F6363D856CD /* RelayAdapterSelfTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RelayAdapterSelfTests.swift; sourceTree = "<group>"; };
 		7A48A3BF25476AA19540B119 /* RelayTranscriptSemantics.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RelayTranscriptSemantics.swift; sourceTree = "<group>"; };
 		7ED41DF90F78B118667C3E6E /* RelayFrames.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RelayFrames.swift; sourceTree = "<group>"; };
@@ -160,8 +162,6 @@
 		F16C7E9BD1B7CAD906C4B521 /* Theme.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Theme.swift; sourceTree = "<group>"; };
 		F6DEB58E9F6876A8D7EC2FC3 /* RelayRemoteTransport.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RelayRemoteTransport.swift; sourceTree = "<group>"; };
 		FC520BDD3312960F427D68A8 /* RelayColdOpenSelfTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RelayColdOpenSelfTests.swift; sourceTree = "<group>"; };
-		A1B2C3D4E5F60718293A4B5C /* RelayAccount.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RelayAccount.swift; sourceTree = "<group>"; };
-		C1D2E3F40516273849A5B6C7 /* RelayLoginView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RelayLoginView.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXGroup section */
@@ -178,8 +178,8 @@
 				E4264777A6D6711FC4B96C08 /* MessageAttachmentView.swift */,
 				5861D83CD29B540184294273 /* MessageView.swift */,
 				3B28AF1AA0E727F9197E2AF3 /* MirrorViews.swift */,
+				71AA49FD4A665ACD4F702372 /* RelayLoginView.swift */,
 				6393EF946CB87187784F0720 /* SettingsViews.swift */,
-				C1D2E3F40516273849A5B6C7 /* RelayLoginView.swift */,
 				C81197D9F13433BFB751B83A /* TranscriptTurnView.swift */,
 				8EF6111AA6D07F4C3E1C04B0 /* VoiceCaptureView.swift */,
 				3BC69DB47BC6EE1CF2679C33 /* WorkspaceHookReviewSheet.swift */,
@@ -214,8 +214,8 @@
 		3D66E59FDEE4762FD9F47539 /* Relay */ = {
 			isa = PBXGroup;
 			children = (
+				2FCEB09EF876DED561344005 /* RelayAccount.swift */,
 				A7A3116F9F627CA225063A80 /* RelayAuthSelfTests.swift */,
-				A1B2C3D4E5F60718293A4B5C /* RelayAccount.swift */,
 				17ADF86538C2ABF99B736DA8 /* RelayClient.swift */,
 				A2A260DB4102DD5BBD094ED1 /* RelayCodec.swift */,
 				30B33762AB958F3D465C206F /* RelayFork.swift */,
@@ -453,6 +453,7 @@
 				3C94CBD0D10C86D20F223FC5 /* ReasoningDial.swift in Sources */,
 				E4F6D124CA42F713372A8D86 /* ReferenceData.swift in Sources */,
 				A73FAD0E94BBE5EDA42C74C4 /* ReferenceSymbols.swift in Sources */,
+				BEA9F04903B0EC884EDCAC61 /* RelayAccount.swift in Sources */,
 				8C94CE9C6F7F6963FC51A577 /* RelayAdapterJournal.swift in Sources */,
 				40AB6ACE12EF2DCD6CF2A62F /* RelayAdapterSelfTests.swift in Sources */,
 				CCCCE401F53D6B380E172FD6 /* RelayAgentGoalSelfTests.swift in Sources */,
@@ -468,12 +469,12 @@
 				4899285A5F36C7C816E63E9C /* RelayHookReviewAdapterSelfTests.swift in Sources */,
 				8BCC4DA60E86C6E039BDA752 /* RelayHookReviewSelfTests.swift in Sources */,
 				455E512C82AB4CC51AB1BB09 /* RelayHostActivity.swift in Sources */,
+				50CE9EA6918B9E07C25D3566 /* RelayLoginView.swift in Sources */,
 				DB213445FBAD56173B1FC4CB /* RelayProjection.swift in Sources */,
 				8219CB1DC8BE4109E268C7FD /* RelayRecoverySelfTests.swift in Sources */,
 				63A903167B36D6C07C960E1E /* RelayRemoteTransport.swift in Sources */,
 				31B714F7C62041947FE7DFE7 /* RelaySelfHostedSelfTests.swift in Sources */,
 				6731B17F2D94BC58E5595BB0 /* RelaySelfTests.swift in Sources */,
-				B1C2D3E4F5061728394A5B6C /* RelayAccount.swift in Sources */,
 				A9CFFE490BAF1DEBB03A4252 /* RelaySessionPages.swift in Sources */,
 				8D0A7F95B2C7B465C23567E2 /* RelaySubagentAdapterSelfTests.swift in Sources */,
 				C170377B023262A68FD4FFBC /* RelayTranscriptSelfTests.swift in Sources */,
@@ -484,7 +485,6 @@
 				ADF7266D8A3EF03743B5B147 /* ServerSentEvents.swift in Sources */,
 				61C2CB23D29D14CAAA2360D2 /* SessionContextInteraction.swift in Sources */,
 				86EAED25290F83C5D8E82087 /* SettingsViews.swift in Sources */,
-				D1E2F3A40516273849B5C6D7 /* RelayLoginView.swift in Sources */,
 				7D654C1742CE1E4BF764E762 /* SpeechCapture.swift in Sources */,
 				0350FFBE0CF351395E980E1D /* Theme.swift in Sources */,
 				F35DE52E7A242279152E5BC4 /* TranscriptPresentation.swift in Sources */,
