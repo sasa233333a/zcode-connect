@@ -19,7 +19,7 @@ struct ConnectionsView: View {
                                 Image(systemName: "laptopcomputer")
                                 VStack(alignment: .leading) {
                                     Text(profile.name).foregroundStyle(.primary)
-                                    Text(profile.isRelay ? "\(profile.relayServiceID != nil && profile.relayServiceID != RelayPairing.officialServiceID ? "自建 Relay · " + (URL(string: profile.baseURL)?.host ?? "中转服务") : "ZCode 远程") · \(profile.relayWorkspaceKey?.split(separator: "/").last.map(String.init) ?? "项目")" : profile.baseURL).font(.caption).foregroundStyle(.secondary)
+                                    Text(profile.isRelay ? "\(profile.relayServiceLabel) · \(profile.relayWorkspaceKey?.split(separator: "/").last.map(String.init) ?? "项目")" : profile.baseURL).font(.caption).foregroundStyle(.secondary)
                                 }
                                 Spacer()
                                 if profile.id == store.activeProfileID {
@@ -60,6 +60,7 @@ struct PairingView: View {
     @State private var certificateSHA256 = ""
     @State private var connecting = false
     @State private var scanner = false
+    @State private var showLogin = false
     @State private var failure: String?
     @State private var relayPayload: String?
     @State private var relayServiceHost: String?
@@ -96,6 +97,7 @@ struct PairingView: View {
                 parse(payload)
             }
         }
+        .sheet(isPresented: $showLogin) { RelayLoginView() }
     }
     private var content: some View {
         Form {
@@ -108,6 +110,18 @@ struct PairingView: View {
                         .font(.subheadline).foregroundStyle(.secondary)
                 }.listRowBackground(Color.clear)
             }
+            if !choosingWorkspace { Section("ZCode 账号") {
+                if let account = store.relayAccount {
+                    LabeledContent("已登录", value: account.name)
+                    Button("退出登录", role: .destructive) { store.signOutRelayAccount() }
+                } else {
+                    Button { showLogin = true } label: {
+                        Label("登录账号", systemImage: "person.crop.circle")
+                    }
+                    Text("手机和电脑需要登录同一账号（Z.ai 或 BigModel）。登录后再扫描电脑上的连接二维码。")
+                        .font(.footnote).foregroundStyle(.secondary)
+                }
+            } }
             if !choosingWorkspace { Section {
                 Button { scanner = true } label: {
                     Label("扫描连接二维码", systemImage: "qrcode.viewfinder")
@@ -187,7 +201,7 @@ struct PairingView: View {
             } header: {
                 Text(choosingWorkspace ? "电脑连接" : manualConnection ? "HTTP 桥接（高级）" : relayServiceHost != nil ? "自建 Relay" : "ZCode 远程控制（推荐）")
             } footer: {
-                Text(choosingWorkspace ? "选择其它项目不会删除原项目的任务或草稿。" : manualConnection ? "兼容原有 HTTP 桥接服务；它不等同于自建 Relay，不能接管原桌面任务。连接密钥保存在钥匙串中。" : "官方连接：电脑左下角手机图标 → 复制链接。自建 Relay：扫描或粘贴自有中转服务导出的完整连接信息。首次连接后选择项目。")
+                Text(choosingWorkspace ? "选择其它项目不会删除原项目的任务或草稿。" : manualConnection ? "兼容原有 HTTP 桥接服务；它不等同于自建 Relay，不能接管原桌面任务。连接密钥保存在钥匙串中。" : "官方连接：手机和电脑需登录同一账号（Z.ai 或 BigModel）；在电脑左下角点击手机图标，开启远程控制后扫描或粘贴链接。首次连接后选择项目。")
             }
             if let failure {
                 Section { Text(failure).foregroundStyle(.red).font(.subheadline) }
@@ -255,7 +269,16 @@ struct PairingView: View {
             guard isVisible, relayAttempt == attempt, store.isCurrentRelaySelection(context) else { return }
             selectionContext = context
             choosingWorkspace = true
-        } catch { if relayAttempt == attempt, !(error is CancellationError) { failure = error.localizedDescription } }
+        } catch {
+            if relayAttempt == attempt, !(error is CancellationError) {
+                let code = (error as? BridgeFailure)?.code ?? (error as? RelayFailure)?.code
+                failure = error.localizedDescription
+                if code == "account_login_required" || code == "relay_account_login_required" {
+                    beganRelay = false
+                    showLogin = true
+                }
+            }
+        }
         if relayAttempt == attempt { connecting = false }
     }
     private func chooseWorkspace(_ workspace: RelayWorkspace) async {
@@ -379,6 +402,7 @@ struct ConnectionGuideView: View {
                 Text("2. 开启远控，显示二维码或复制连接链接。")
             }
             Section("官方连接：手机端") {
+                Text("0. 在 App 中登录与电脑相同的账号（Z.ai 或 BigModel）。")
                 Text("1. 主菜单 → 添加连接 → 扫描二维码或粘贴连接信息。")
                 Text("2. 确认目标电脑，选择原有项目。进入任务，核对最新回复。")
             }
@@ -420,5 +444,14 @@ struct ConnectionGuideView: View {
         }
         .navigationTitle("连接指南").navigationBarTitleDisplayMode(.inline)
         .accessibilityIdentifier("connection.guide")
+    }
+}
+
+private extension ConnectionProfile {
+    var relayServiceLabel: String {
+        if let id = relayServiceID, !RelayPairing.isOfficialServiceID(id) {
+            return "自建 Relay · " + (URL(string: baseURL)?.host ?? "中转服务")
+        }
+        return "ZCode 远程"
     }
 }

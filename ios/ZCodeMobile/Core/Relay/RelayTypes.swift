@@ -79,9 +79,15 @@ public struct RelayFailure: Error, LocalizedError, Sendable, Equatable {
 
 /// Sensitive pairing material is never included in either printable description.
 public struct RelayPairing: Sendable, CustomStringConvertible, CustomDebugStringConvertible {
+    /// Legacy official relay (pass_hash challenge pairing).
     public static let officialServiceID = "wss://zcode.z.ai/ws"
+    /// Account-token relay used by current ZCode desktop releases.
+    public static let officialAccountServiceID = "wss://zcode.z.ai/api/v1/remote/ws2"
     public static let officialProfileURL = "https://zcode.z.ai/remote/v4"
     public let deviceID: String
+    /// Routing identity carried by current QRs. The terminal token is account-scoped,
+    /// so this value tells the relay which logged-in desktop to pair with.
+    public let deviceMid: String?
     public let deviceName: String
     public let appVersion: String
     public let relayURL: URL
@@ -89,9 +95,18 @@ public struct RelayPairing: Sendable, CustomStringConvertible, CustomDebugString
     public let serviceID: String
     public let profileURL: URL
     public let isSelfHosted: Bool
-    private let passHash: String
+    /// Current official QRs carry no shared secret; the phone authenticates with the
+    /// Z.ai account token instead. Self-hosted and old official QRs still use the
+    /// pass_hash challenge.
+    public let requiresAccountToken: Bool
+    private let passHash: String?
     public var description: String { "RelayPairing(credential: redacted)" }
     public var debugDescription: String { description }
+
+    public static func isOfficialServiceID(_ value: String) -> Bool {
+        value == officialServiceID || value == officialAccountServiceID
+    }
+    public var isLegacyOfficial: Bool { !isSelfHosted && !requiresAccountToken }
 
     /// Plain URLs retain the original official-only contract.
     public init(scannedURL: String) throws {
@@ -150,23 +165,44 @@ public struct RelayPairing: Sendable, CustomStringConvertible, CustomDebugString
             throw RelayFailure("relay_invalid_pairing", "自建 Relay 配对地址包含不支持的字段。")
         }
         func field(_ name: String) -> String? { items.first { $0.name == name }?.value }
-        guard let sid = field("sid"), RelayWire.validID(sid), let hash = field("hash"),
-              (32...512).contains(hash.utf8.count), hash.rangeOfCharacter(from: .whitespacesAndNewlines) == nil else {
-            throw RelayFailure("relay_invalid_pairing", "The pairing QR is missing its credential.")
+        guard let sid = field("sid"), RelayWire.validID(sid) else {
+            throw RelayFailure("relay_invalid_pairing", "The pairing QR is missing its desktop identity.")
+        }
+        let hash = field("hash")
+        let mid = field("mid")?.trimmingCharacters(in: .whitespacesAndNewlines)
+        if let hash {
+            guard (32...512).contains(hash.utf8.count), hash.rangeOfCharacter(from: .whitespacesAndNewlines) == nil else {
+                throw RelayFailure("relay_invalid_pairing", "The pairing QR is missing its credential.")
+            }
+        } else if custom {
+            throw RelayFailure("relay_invalid_pairing", "自建 Relay 连接信息缺少配对凭据。")
+        }
+        if let mid, !mid.isEmpty {
+            guard mid.utf8.count <= 512, mid.rangeOfCharacter(from: .controlCharacters) == nil,
+                  mid.rangeOfCharacter(from: .whitespacesAndNewlines) == nil else {
+                throw RelayFailure.invalid("Invalid relay device routing ID.")
+            }
+        }
+        let accountAuthenticated = !custom && hash == nil
+        if accountAuthenticated {
+            guard let mid, !mid.isEmpty else {
+                throw RelayFailure("relay_invalid_pairing", "这个二维码缺少电脑路由信息，请在电脑上升级 ZCode 后重新开启远程控制并扫码。")
+            }
+            relay = URLComponents(string: Self.officialAccountServiceID)!
         }
         guard let serviceURL = relay.url else { throw RelayFailure.invalid("Invalid relay endpoint.") }
         serviceID = serviceURL.absoluteString
-        if let mid = field("mid"), !mid.isEmpty {
-            guard mid.utf8.count <= 512, mid.rangeOfCharacter(from: .controlCharacters) == nil else { throw RelayFailure.invalid("Invalid relay device routing ID.") }
+        if !accountAuthenticated, let mid, !mid.isEmpty {
             relay.queryItems = [URLQueryItem(name: "mid", value: mid)]
         }
         page.query = nil; page.host = host; if page.port == 443 { page.port = nil }
         if page.path.hasSuffix("/") { page.path.removeLast() }
         guard let publicURL = page.url, let endpoint = relay.url else { throw RelayFailure.invalid("Invalid relay endpoint.") }
-        deviceID = sid; passHash = hash
+        deviceID = sid; passHash = hash; deviceMid = mid
         deviceName = String((field("name") ?? "ZCode Desktop").prefix(200))
         appVersion = String((field("app_version") ?? "unknown").prefix(100))
         relayURL = endpoint; profileURL = publicURL; isSelfHosted = custom
+        requiresAccountToken = accountAuthenticated
     }
 
     private static func canonicalHost(_ value: String?) -> String? {
@@ -186,9 +222,33 @@ public struct RelayPairing: Sendable, CustomStringConvertible, CustomDebugString
     }
 
     public func challengeProof(nonce: String) throws -> String {
+        guard let passHash else { throw RelayFailure("relay_account_login_required", "This pairing uses a Z.ai account token, not a pairing secret.") }
         guard !nonce.isEmpty, nonce.utf8.count <= 4096 else { throw RelayFailure.invalid("Invalid relay challenge.") }
         let value = HMAC<SHA256>.authenticationCode(for: Data("\(nonce)|terminal|\(deviceID)".utf8), using: SymmetricKey(data: Data(passHash.utf8)))
         return Data(value).base64EncodedString().replacingOccurrences(of: "+", with: "-").replacingOccurrences(of: "/", with: "_").replacingOccurrences(of: "=", with: "")
+    }
+
+    /// Account-token terminals connect to the same relay endpoint with a short-lived
+    /// token and the desktop routing ID from the QR. The token never appears in a
+    /// profile, log or error description.
+    public func accountRelayURL(terminalToken: String) throws -> URL {
+        guard requiresAccountToken, let deviceMid, !deviceMid.isEmpty else {
+            throw RelayFailure("relay_invalid_pairing", "This pairing does not use a Z.ai account token.")
+        }
+        guard !terminalToken.isEmpty, terminalToken.utf8.count <= 4096,
+              terminalToken.rangeOfCharacter(from: .whitespacesAndNewlines) == nil else {
+            throw RelayFailure("relay_account_login_required", "登录状态无效，请重新登录 ZCode 账号。")
+        }
+        guard var components = URLComponents(url: relayURL, resolvingAgainstBaseURL: false), components.query == nil else {
+            throw RelayFailure.invalid("Invalid account relay endpoint.")
+        }
+        components.queryItems = [URLQueryItem(name: "token", value: terminalToken),
+                                 URLQueryItem(name: "mid", value: deviceMid)]
+        guard let url = components.url, url.scheme == "wss", url.host == "zcode.z.ai",
+              url.path == "/api/v1/remote/ws2", url.port == nil || url.port == 443 else {
+            throw RelayFailure.invalid("Invalid account relay endpoint.")
+        }
+        return url
     }
 }
 

@@ -60,7 +60,7 @@ actor RelayRemoteTransport: RemoteTransport {
         version = await client.connectedAppVersion
         // Preserve the official scope byte-for-byte so existing uncertain commands
         // remain recoverable. A custom service can never read that journal.
-        let scopedDevice = serviceID == RelayPairing.officialServiceID ? deviceID : "service:" + relayDigest(Data(serviceID.utf8)) + "\n" + deviceID
+        let scopedDevice = RelayPairing.isOfficialServiceID(serviceID) ? deviceID : "service:" + relayDigest(Data(serviceID.utf8)) + "\n" + deviceID
         projectID = "relay-" + String(relayDigest(Data((scopedDevice + "\n" + bridge.workspaceKey).utf8)).prefix(24))
         journal = try RelayAdapterJournal(scope: scopedDevice + "\n" + bridge.workspaceKey + "\n" + client.clientID, directory: journalDirectory)
         for task in bootstrap.tasks ?? [] where Self.belongs(task, to: bridge) {

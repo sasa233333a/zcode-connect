@@ -162,6 +162,7 @@ final class AppStore {
     @ObservationIgnored private var refreshRequest = UUID()
 
     var relayWorkspaces: [RelayWorkspace] = []
+    var relayAccount: RelayAccount?
     private(set) var relayWorkspaceSelection: RelayWorkspaceSelectionContext?
     @ObservationIgnored private var relaySelectionOperation: UUID?
     @ObservationIgnored private var relayClient: RelayClient?
@@ -204,6 +205,7 @@ final class AppStore {
         pinnedIDs = Set(defaults.stringArray(forKey: scopedKey("pins")) ?? [])
         archivedIDs = Set(defaults.stringArray(forKey: scopedKey("archives")) ?? [])
         appearance = defaults.string(forKey: "appearance") ?? "跟随系统"
+        relayAccount = RelayAccountService.storedAccount()
         hapticsEnabled = defaults.object(forKey: "haptics") as? Bool ?? true
         showContextUsage = defaults.object(forKey: "showContextUsage") as? Bool ?? true
         showTimestamps = defaults.object(forKey: "timestamps") as? Bool ?? true
@@ -481,6 +483,7 @@ final class AppStore {
         isApplicationActive = true
         if !wasActive { automaticConnectionAttempt = 0 }
         guard !isReferenceMode else { return }
+        refreshRelayAccountIfChanged()
         if let task = automaticConnectionTask { await task.value; return }
         if connection.isOnline, client != nil {
             if indexWatchTask == nil { startIndexWatch() }
@@ -758,6 +761,9 @@ final class AppStore {
               (profile.relayServiceID ?? RelayPairing.legacyServiceID(profileURL: profile.baseURL)) == pairing.serviceID else {
             throw BridgeFailure(message: "保存的连接与配对服务不一致，请重新添加连接。", code: "relay_profile_mismatch")
         }
+        if pairing.isLegacyOfficial {
+            throw BridgeFailure(message: "这个连接来自旧版 ZCode。请在电脑上重新开启远程控制，扫描新的二维码。", code: "relay_legacy_pairing")
+        }
         let context = try await pairRelay(raw, confirmedControllerReplacement: true, attempt: UUID(), reportFailure: reportFailure, pairing: pairing)
         guard !Task.isCancelled, isCurrentRelaySelection(context) else { throw CancellationError() }
         if !relayWorkspaces.contains(where: { $0.id == workspace && $0.canAttach }) {
@@ -841,6 +847,12 @@ final class AppStore {
                            reportFailure: Bool, pairing parsed: RelayPairing? = nil) async throws -> RelayWorkspaceSelectionContext {
         let pairing = try parsed ?? RelayPairing(payload: raw)
         guard confirmedControllerReplacement else { throw BridgeFailure(message: "请先确认连接这台电脑。", code: "controller_confirmation_required") }
+        if pairing.requiresAccountToken, relayAccount == nil {
+            throw BridgeFailure(message: "请先登录 ZCode 账号。手机和电脑需要登录同一账号，再扫描连接二维码。", code: "account_login_required")
+        }
+        if pairing.isLegacyOfficial {
+            throw BridgeFailure(message: "这个连接码来自旧版 ZCode。请在电脑上重新开启远程控制并扫描新的二维码。", code: "relay_legacy_pairing")
+        }
         guard !Task.isCancelled else { throw CancellationError() }
         tearDownConnection()
         relayConnectionAttempt = attempt
@@ -939,6 +951,26 @@ final class AppStore {
 
     func cancelRelayPairing(attempt: UUID) {
         if relayConnectionAttempt == attempt { disconnect() }
+    }
+
+    func setRelayAccount(_ account: RelayAccount?) {
+        relayAccount = account
+    }
+
+    func signOutRelayAccount() {
+        RelayAccountService.clear()
+        relayAccount = nil
+    }
+
+    func refreshRelayAccount() {
+        relayAccount = RelayAccountService.storedAccount()
+    }
+
+    /// Returning to the foreground is a cheap moment to notice a token obtained
+    /// in another process or a profile imported while the app was suspended.
+    func refreshRelayAccountIfChanged() {
+        let stored = RelayAccountService.storedAccount()
+        if stored?.jwt != relayAccount?.jwt { relayAccount = stored }
     }
 
     static func validatedURL(_ text: String) -> URL? {

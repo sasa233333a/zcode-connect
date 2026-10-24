@@ -52,9 +52,19 @@ public actor RelayURLSessionSocket: RelaySocketTransport {
     private var tracedSends = 0
     public init() {}
     public func connect(to url: URL) async throws {
-        guard url.scheme == "wss", url.host == "zcode.z.ai", url.path == "/ws",
-              url.port == nil || url.port == 443, url.user == nil, url.password == nil, url.fragment == nil else {
-            throw RelayFailure("relay_invalid_endpoint", "A custom relay endpoint requires explicit pairing information.")
+        let components = URLComponents(url: url, resolvingAgainstBaseURL: false)
+        let isOfficialHost = url.scheme == "wss" && url.host == "zcode.z.ai" && (url.port == nil || url.port == 443)
+            && url.user == nil && url.password == nil && url.fragment == nil
+        if isOfficialHost, url.path == "/api/v1/remote/ws2" {
+            let items = components?.queryItems ?? []
+            guard items.count == 2, Set(items.map(\.name)) == Set(["token", "mid"]),
+                  items.allSatisfy({ !($0.value ?? "").isEmpty }) else {
+                throw RelayFailure("relay_invalid_endpoint", "The account relay endpoint requires a terminal token and desktop routing ID.")
+            }
+        } else {
+            guard isOfficialHost, url.path == "/ws" else {
+                throw RelayFailure("relay_invalid_endpoint", "A custom relay endpoint requires explicit pairing information.")
+            }
         }
         try open(to: url)
     }
@@ -103,6 +113,7 @@ public actor RelayClient {
     private let eventSink: AsyncStream<RelayEvent>.Continuation
     private var observers: [UUID: AsyncStream<RelayEvent>.Continuation] = [:]
     private let transport: any RelaySocketTransport
+    private let tokenProvider: any RelayTerminalTokenProviding
     private let requestTimeout: TimeInterval
     private var receiveTask: Task<Void, Never>?, heartbeatTask: Task<Void, Never>?, outboundTail: Task<Void, Error>?
     private var pairing: RelayPairing?, connectionID: UUID?
@@ -145,9 +156,12 @@ public actor RelayClient {
     private var commandHashes: [String: Data] = [:]
     private var readOnlySubagents = Set<String>()
 
-    public init(clientID: String, transport: any RelaySocketTransport = RelayURLSessionSocket(), requestTimeout: TimeInterval = 15) throws {
+    public init(clientID: String, transport: any RelaySocketTransport = RelayURLSessionSocket(),
+                tokenProvider: any RelayTerminalTokenProviding = RelayAccountTokenProvider(),
+                requestTimeout: TimeInterval = 15) throws {
         guard RelayWire.validID(clientID), requestTimeout.isFinite, (0.05...120).contains(requestTimeout) else { throw RelayFailure.invalid("Invalid relay client configuration.") }
-        self.clientID = clientID; self.transport = transport; self.requestTimeout = requestTimeout
+        self.clientID = clientID; self.transport = transport; self.tokenProvider = tokenProvider
+        self.requestTimeout = requestTimeout
         let pair = AsyncStream<RelayEvent>.makeStream(bufferingPolicy: .bufferingNewest(128)); events = pair.stream; eventSink = pair.continuation
     }
     deinit { receiveTask?.cancel(); heartbeatTask?.cancel(); pairTimeout?.cancel(); eventSink.finish() }
@@ -179,9 +193,14 @@ public actor RelayClient {
         if lastDeviceID != pairing.deviceID || lastServiceID != pairing.serviceID { reducers.removeAll(); snapshots.removeAll(); commandHashes.removeAll(); stoppedSessions.removeAll(); workspaceScopeID = nil }
         lastDeviceID = pairing.deviceID; lastServiceID = pairing.serviceID
         let id = UUID(); connectionID = id; self.pairing = pairing; setState(.connecting)
-        RelayConnectionTrace.shared.record("connect_start selfHosted=\(pairing.isSelfHosted) timeout=\(requestTimeout)")
+        RelayConnectionTrace.shared.record("connect_start account=\(pairing.requiresAccountToken) selfHosted=\(pairing.isSelfHosted) timeout=\(requestTimeout)")
         do {
-            try await transport.connect(pairing: pairing)
+            if pairing.requiresAccountToken {
+                let token = try await tokenProvider.terminalToken()
+                try await transport.connect(to: try pairing.accountRelayURL(terminalToken: token))
+            } else {
+                try await transport.connect(pairing: pairing)
+            }
             receiveTask = Task { [weak self, transport] in
                 do {
                     while !Task.isCancelled {
@@ -193,11 +212,23 @@ public actor RelayClient {
             try await withTaskCancellationHandler {
                 try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, any Error>) in
                     pairWaiter = continuation
-                    pairTimeout = timeoutTask(requestTimeout) { [weak self] in await self?.transportFailed(RelayFailure("relay_pairing_timeout", "The desktop did not pair before the deadline."), connectionID: id) }
+                    pairTimeout = timeoutTask(pairing.requiresAccountToken ? max(requestTimeout, 30) : requestTimeout) { [weak self] in await self?.transportFailed(RelayFailure("relay_pairing_timeout", "The desktop did not pair before the deadline."), connectionID: id) }
                     Task {
                         do {
                             self.setState(.authenticating)
-                            try await self.sendEnvelope(.object(["type": .string("auth_init"), "role": .string("terminal"), "device_sid": .string(pairing.deviceID), "meta": .object(["platform": .string("web"), "version": .string(pairing.appVersion), "name": .string("zcode-native-ios")]), "client_ts": .int(Int(Date().timeIntervalSince1970 * 1000))]))
+                            var fields: [String: RelayJSON] = [
+                                "type": .string("auth_init"),
+                                "device_sid": .string(pairing.deviceID),
+                                "client_ts": .int(Int(Date().timeIntervalSince1970))
+                            ]
+                            if pairing.requiresAccountToken {
+                                let version = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "1.0"
+                                fields["meta"] = .object(["platform": .string("ios"), "version": .string(version), "name": .string("Zcode Mobile")])
+                            } else {
+                                fields["role"] = .string("terminal")
+                                fields["meta"] = .object(["platform": .string("web"), "version": .string(pairing.appVersion), "name": .string("zcode-native-ios")])
+                            }
+                            try await self.sendEnvelope(.object(fields))
                         } catch { await self.transportFailed(error, connectionID: id) }
                     }
                 }
@@ -242,7 +273,7 @@ public actor RelayClient {
     }
     private func sendPayload(_ value: RelayJSON) async throws {
         guard paired else { throw RelayFailure.closed() }
-        try await sendEnvelope(.object(["type": .string("data"), "payload": value, "client_ts": .int(Int(Date().timeIntervalSince1970 * 1000))]))
+        try await sendEnvelope(.object(["type": .string("data"), "payload": value, "client_ts": .int(Int(Date().timeIntervalSince1970))]))
     }
     private func receive(_ text: String, connectionID id: UUID) async throws {
         guard connectionID == id else { return }
@@ -250,9 +281,12 @@ public actor RelayClient {
         let value = try RelayJSON(data: Data(text.utf8)), type = try value.requiringString("type")
         if type == "auth_challenge" {
             RelayConnectionTrace.shared.record("auth_challenge")
+            guard pairing?.requiresAccountToken != true else {
+                throw RelayFailure("relay_account_login_required", "账号不匹配或登录已失效。请确认手机和电脑登录同一账号（Z.ai 或 BigModel），然后重新登录。")
+            }
             guard !paired, let pairing else { throw RelayFailure.invalid("Unexpected authentication challenge.") }
             let proof = try pairing.challengeProof(nonce: value.requiringString("nonce"))
-            try await sendEnvelope(.object(["type": .string("auth_response"), "device_sid": .string(pairing.deviceID), "proof": .string(proof), "client_ts": .int(Int(Date().timeIntervalSince1970 * 1000))])); return
+            try await sendEnvelope(.object(["type": .string("auth_response"), "device_sid": .string(pairing.deviceID), "proof": .string(proof), "client_ts": .int(Int(Date().timeIntervalSince1970))])); return
         }
         if ["auth_ack", "pair_status_ack"].contains(type) {
             RelayConnectionTrace.shared.record(type + " status=" + (["matched", "waiting"].contains(value["pair_status"].string ?? "") ? value["pair_status"].string! : "invalid"))
@@ -266,6 +300,9 @@ public actor RelayClient {
             }; return
         }
         if type == "error" {
+            if value["code"].string == "AUTH_FAILED", pairing?.requiresAccountToken == true {
+                throw RelayFailure("relay_account_login_required", "账号不匹配或登录已失效。请确认手机和电脑登录同一账号（Z.ai 或 BigModel），然后重新登录。")
+            }
             throw RelayFailure.rejected(code: value["code"].string, paired: paired)
         }
         guard type == "data", paired else { return }
@@ -321,7 +358,12 @@ public actor RelayClient {
         guard ProcessInfo.processInfo.systemUptime - lastHeartbeat <= 30 else { throw RelayFailure("relay_heartbeat_timeout", "The relay stopped acknowledging heartbeats.", outcomeUncertain: true) }
         try frames?.checkDeadline()
         for subscription in conversationAssembler.expire() { requestRecovery(subscription, reason: "conversation_fragment_timeout") }
-        try await sendEnvelope(.object(["type": .string("pair_status_query"), "device_sid": .string(pairing.deviceID), "client_ts": .int(Int(Date().timeIntervalSince1970 * 1000))]))
+        var query: [String: RelayJSON] = ["type": .string("pair_status_query"),
+                                          "client_ts": .int(Int(Date().timeIntervalSince1970))]
+        // The account relay derives the session from the token; its strict frame
+        // schema rejects the legacy device_sid field.
+        if !pairing.requiresAccountToken { query["device_sid"] = .string(pairing.deviceID) }
+        try await sendEnvelope(.object(query))
     }
 
     private func appRequest(type: String, expected: Set<String>, fields: [String: RelayJSON] = [:], workspace: RelayWorkspace? = nil, bridgeID: String? = nil, generation: Int? = nil) async throws -> RelayJSON {
@@ -451,7 +493,7 @@ public actor RelayClient {
     private func sendIPC(_ bytes: Data) async throws {
         guard var current = frames else { throw RelayFailure.closed() }
         let payloads = try current.enqueue(bytes); frames = current
-        try await sendEnvelopes(payloads.map { .object(["type": .string("data"), "payload": $0, "client_ts": .int(Int(Date().timeIntervalSince1970 * 1000))]) })
+        try await sendEnvelopes(payloads.map { .object(["type": .string("data"), "payload": $0, "client_ts": .int(Int(Date().timeIntervalSince1970))]) })
     }
     private func receiveIPC(_ bytes: Data) async throws {
         let message = try RelayIPCCodec.decode(bytes)
