@@ -911,6 +911,36 @@ final class AppStore {
         await restoreSavedConnection()
     }
 
+    /// Pull-to-refresh is the only explicit user retry gesture. It clears a
+    /// paused automatic-reconnect block before starting a fresh attempt.
+    func refreshOrReconnect() async {
+        guard !isReferenceMode, let profile = activeProfile else {
+            await refresh()
+            return
+        }
+        if connection.isOnline {
+            await refresh()
+            return
+        }
+        cancelAutomaticConnection()
+        automaticConnectionAttempt = 0
+        reconnectAttempt = 0
+        setAutomaticConnectionBlock(nil, profileID: profile.id)
+        await restoreSavedConnection()
+    }
+
+    /// Showing a device's page is an explicit signal that the user wants that
+    /// computer connected. Resume a paused automatic attempt without a banner.
+    func resumeConnectionIfNeeded() async {
+        guard startCompleted, !isReferenceMode, isApplicationActive, let profile = activeProfile,
+              !connection.isOnline, connection != .connecting, !isAutoReconnecting else { return }
+        cancelAutomaticConnection()
+        automaticConnectionAttempt = 0
+        reconnectAttempt = 0
+        setAutomaticConnectionBlock(nil, profileID: profile.id)
+        await restoreSavedConnection()
+    }
+
     /// User-initiated retry from the reconnect banner. This is distinct from the
     /// automatic loop: it clears a paused block and starts a fresh attempt now.
     func retryConnectionNow() async {
