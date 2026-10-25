@@ -1257,7 +1257,7 @@ final class AppStore {
             sheet = .pairing
             return
         }
-        try await completeRelayPairing(workspaceKey: workspace, name: profile.name, context: context, reportFailure: reportFailure)
+        try await completeRelayPairing(workspaceKey: workspace, name: profile.name, context: context, reportFailure: reportFailure, prefetchAll: true)
     }
 
     private static func connectionErrorMessage(_ error: Error) -> String {
@@ -1335,7 +1335,7 @@ final class AppStore {
                                           attempt: attempt, reportFailure: reportFailure, pairing: pairing)
         if autoSelectWorkspace {
             if let workspace = preferredWorkspace(for: pairing) {
-                try await completeRelayPairing(workspaceKey: workspace.id, name: "", context: context)
+                try await completeRelayPairing(workspaceKey: workspace.id, name: "", context: context, prefetchAll: true)
             } else {
                 offerRelayWorkspaceSelection(context, name: pairing.deviceName)
             }
@@ -1429,7 +1429,7 @@ final class AppStore {
         }
     }
 
-    func completeRelayPairing(workspaceKey: String, name: String, context: RelayWorkspaceSelectionContext, reportFailure: Bool = false) async throws {
+    func completeRelayPairing(workspaceKey: String, name: String, context: RelayWorkspaceSelectionContext, reportFailure: Bool = false, prefetchAll: Bool = false) async throws {
         guard !Task.isCancelled, isCurrentRelaySelection(context) else { throw CancellationError() }
         guard relaySelectionOperation == nil else { throw BridgeFailure(message: "正在连接项目，请稍后重试。", code: "relay_busy") }
         let operation = UUID(); relaySelectionOperation = operation
@@ -1449,12 +1449,7 @@ final class AppStore {
             streamConnected = false
             if let old = client as? RelayRemoteTransport { await old.shutdown() }
             guard !Task.isCancelled, isCurrentRelaySelection(context) else { throw CancellationError() }
-            let bridge = try await paired.openWorkspace(key: workspaceKey)
-            guard !Task.isCancelled, isCurrentRelaySelection(context) else { throw CancellationError() }
             let pairing = try RelayPairing(payload: raw)
-            let adapter = try await RelayRemoteTransport(client: paired, bootstrap: bootstrap, bridge: bridge,
-                                                         hostName: name.isEmpty ? pairing.deviceName : name)
-            guard !Task.isCancelled, isCurrentRelaySelection(context) else { await adapter.shutdown(); throw CancellationError() }
             let displayName = name.isEmpty ? pairing.deviceName : name
             let sameDevice = { (candidate: ConnectionProfile) in
                 candidate.relayDeviceID == pairing.deviceID
@@ -1474,9 +1469,20 @@ final class AppStore {
                 deviceProfiles.append(profile)
             }
             guard let profile = deviceProfiles.first(where: { $0.relayWorkspaceKey == workspaceKey }) else {
-                await adapter.shutdown()
                 throw BridgeFailure(message: "这个项目当前无法连接，请在电脑上激活后重试。", code: "relay_workspace_unavailable")
             }
+            let bridge: RelayBridge
+            if prefetchAll {
+                bridge = try await prefetchWorkspaceSessions(client: paired, bootstrap: bootstrap,
+                                                             profiles: deviceProfiles, activeKey: workspaceKey,
+                                                             hostName: displayName)
+            } else {
+                bridge = try await paired.openWorkspace(key: workspaceKey)
+            }
+            guard !Task.isCancelled, isCurrentRelaySelection(context) else { throw CancellationError() }
+            let adapter = try await RelayRemoteTransport(client: paired, bootstrap: bootstrap, bridge: bridge,
+                                                         hostName: displayName)
+            guard !Task.isCancelled, isCurrentRelaySelection(context) else { await adapter.shutdown(); throw CancellationError() }
             let keepsReadingState = !isReferenceMode && activeProfileID == profile.id && activeProfile?.baseURL == profile.baseURL
             client = adapter
             if !keepsReadingState {
@@ -1514,6 +1520,59 @@ final class AppStore {
             }
             failRelaySelection(error, context: context, reportFailure: reportFailure)
             throw error
+        }
+    }
+
+
+    /// Populate every open workspace's task list before the home screen is shown.
+    /// ZCode only lists tasks for the attached workspace, so a single bridge
+    /// otherwise makes the app look like it has one project.
+    private func prefetchWorkspaceSessions(client: RelayClient, bootstrap: RelayBootstrap,
+                                           profiles: [ConnectionProfile], activeKey: String,
+                                           hostName: String) async throws -> RelayBridge {
+        for workspace in bootstrap.workspaces.filter(\.canAttach).prefix(8) where workspace.id != activeKey {
+            guard let profile = profiles.first(where: { $0.relayWorkspaceKey == workspace.id }) else { continue }
+            do {
+                _ = try await client.openWorkspace(key: workspace.id)
+                // Archived tasks are loaded when that project is opened; asking
+                // for them here can stall the whole connection on desktops that
+                // do not answer listArchivedTasks promptly.
+                let tasks = try await client.listTasks()
+                let conversation = workspace.workspacePurpose == "conversation"
+                let name = conversation ? "对话"
+                    : Self.workspaceDisplayName(label: workspace.label, path: workspace.workspacePath,
+                                                purpose: workspace.workspacePurpose, latestSessionTitle: nil)
+                let sessions = tasks.map { task -> RemoteSession in
+                    let milliseconds = task.updatedAt ?? task.createdAt ?? 0
+                    return RemoteSession(
+                        id: task.taskId, title: task.title,
+                        projectID: "prefetch-" + workspace.id, projectName: name,
+                        updatedAt: Date(timeIntervalSince1970: milliseconds / 1000),
+                        status: Self.prefetchedStatus(task),
+                        isPinned: task.pinned ?? false, isArchived: task.archived ?? false,
+                        canControl: false, source: "official-relay",
+                        unread: task.unreadAt != nil, unreadAt: task.unreadAt, unreadScope: "desktop",
+                        canMarkUnread: false, canFork: false, canReviewHooks: false,
+                        canRename: false, canPin: false, canArchive: false)
+                }
+                let state = CachedReadingState(savedAt: .now, sessions: sessions, projects: [],
+                                               sessionID: nil, hostName: hostName)
+                save(state, key: profileCacheKey(profile))
+                profileReadingStates[profile.id] = state
+            } catch {
+                continue
+            }
+        }
+        return try await client.openWorkspace(key: activeKey)
+    }
+
+    private static func prefetchedStatus(_ task: RelayTaskMetadata) -> SessionStatus {
+        switch task.status ?? task.displayStatus ?? "idle" {
+        case "running": return .running
+        case "waiting", "pending", "queued": return .waiting
+        case "completed", "success": return .completed
+        case "failed", "error": return .failed
+        default: return .idle
         }
     }
 
