@@ -397,7 +397,7 @@ struct PairingView: View {
         guard isVisible, !connecting, let context = selectionContext, store.isCurrentRelaySelection(context) else { return }
         connecting = true; failure = nil
         do {
-            try await store.completeRelayPairing(workspaceKey: workspace.id, name: name, context: context)
+            try await store.completeRelayPairing(workspaceKey: workspace.id, name: name, context: context, prefetchAll: true)
             guard isVisible, selectionContext == context, store.isCurrentRelaySelection(context) else { return }
             store.sheet = nil; dismiss()
         } catch is CancellationError {
