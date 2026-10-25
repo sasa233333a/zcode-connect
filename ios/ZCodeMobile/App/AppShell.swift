@@ -42,18 +42,7 @@ struct AppShell: View {
         }
         .animation(.easeInOut(duration: 0.2), value: store.toast)
         .task {
-            store.notificationEventSink = { event in
-                Task { await TaskNotifications.shared.post(event) }
-            }
-            store.activitySyncSink = { [weak store] in
-                guard let store else { return }
-                Self.syncLiveActivity(for: store)
-            }
-            store.activityEndSink = {
-                TaskActivityManager.shared.endImmediately()
-            }
             await store.start()
-            syncLiveActivity()
             #if DEBUG
             if ProcessInfo.processInfo.arguments.contains("--mirror-auto") { store.sheet = .mirror }
             #endif
@@ -79,33 +68,9 @@ struct AppShell: View {
         }
         .onChange(of: scenePhase) { _, phase in
             if phase == .active {
-                TaskNotifications.shared.endBackgroundWindow()
-                if store.completionNotifications, store.hasConnectedBefore, !isRelayTestRun {
-                    Task { await TaskNotifications.shared.requestAuthorizationIfNeeded() }
-                }
                 Task { await store.applicationDidBecomeActive(); await store.resumeConnectionIfNeeded() }
             } else if phase == .background {
                 store.applicationDidEnterBackground()
-                TaskNotifications.shared.beginBackgroundWindowIfRunning()
-            }
-            syncLiveActivity()
-        }
-        .onChange(of: store.sessions) { _, _ in syncLiveActivity() }
-        .onChange(of: store.pendingInteractions.mapValues(\.count)) { _, _ in syncLiveActivity() }
-        .onChange(of: store.connection) { _, _ in syncLiveActivity() }
-        .onChange(of: store.hostName) { _, _ in syncLiveActivity() }
-        .onChange(of: store.liveActivitiesEnabled) { _, _ in
-            store.savePreferences()
-            syncLiveActivity()
-        }
-        .onChange(of: store.hasConnectedBefore) { _, connected in
-            if connected, store.completionNotifications, !isRelayTestRun {
-                Task { await TaskNotifications.shared.requestAuthorizationIfNeeded() }
-            }
-        }
-        .onChange(of: store.completionNotifications) { _, enabled in
-            if enabled, !isRelayTestRun {
-                Task { await TaskNotifications.shared.requestAuthorizationIfNeeded() }
             }
         }
         .onOpenURL { store.openDeepLink($0) }
@@ -134,46 +99,5 @@ struct AppShell: View {
                 }
             }
         }
-    }
-
-    private var isRelayTestRun: Bool {
-        #if DEBUG
-        let arguments = ProcessInfo.processInfo.arguments
-        return arguments.contains("--relay-test-pair") || arguments.contains("--relay-test-discover")
-            || arguments.contains("--live-activity-review") || arguments.contains("--onboarding-review")
-        #else
-        return false
-        #endif
-    }
-
-    private func syncLiveActivity() {
-        Self.syncLiveActivity(for: store)
-    }
-
-    private static func syncLiveActivity(for store: AppStore) {
-        #if DEBUG
-        if ProcessInfo.processInfo.arguments.contains("--live-activity-review") {
-            TaskActivityManager.shared.sync(sessions: [
-                RemoteSession(id: "review-waiting", title: "整理项目步骤与目录",
-                              projectID: "review-project", projectName: "zocode-connect",
-                              updatedAt: .now, status: .waiting),
-                RemoteSession(id: "review-running", title: "适配 zcode-connect 并打包 iOS",
-                              projectID: "review-project", projectName: "zocode-connect",
-                              updatedAt: .now.addingTimeInterval(-30), status: .running)
-            ], hostName: "Review MacBook", enabled: true, activeSessionID: nil)
-            return
-        }
-        #endif
-        let waitingIDs = Set(store.pendingInteractions.compactMap { key, value in value.isEmpty ? nil : key })
-        let sessions = store.sessions.map { session -> RemoteSession in
-            guard waitingIDs.contains(session.id), session.status == .running else { return session }
-            var session = session
-            session.status = .waiting
-            return session
-        }
-        let live = store.liveActivitiesEnabled && !store.isReferenceMode
-            && (store.connection.isOnline || store.isAutoReconnecting)
-        TaskActivityManager.shared.sync(sessions: sessions, hostName: store.hostName,
-                                        enabled: live, activeSessionID: store.currentSessionID)
     }
 }
