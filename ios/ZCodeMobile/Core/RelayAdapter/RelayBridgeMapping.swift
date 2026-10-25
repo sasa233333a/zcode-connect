@@ -21,7 +21,9 @@ enum RelayBridgeMapping {
     static func session(id: String, meta: RelayTaskMetadata?, snapshot: RelaySessionSnapshot?, projection: RelayConversationProjection?, bridge: RelayBridge, projectID: String) -> RelayJSON {
         let state = status(projection, snapshot: snapshot, meta: meta)
         let workspaceName = URL(fileURLWithPath: bridge.workspacePath).lastPathComponent
-        let projectName = workspaceName.hasPrefix("draft-") ? "草稿项目" : workspaceName
+        let conversationWorkspace = workspaceName.hasPrefix("draft-")
+            || bridge.workspacePath.contains("/.zcode/workspace/")
+        let projectName = conversationWorkspace ? "对话" : workspaceName
         let controllable = meta?.provider == nil || meta?.provider == "glm"
         let archived = meta?.archived ?? false
         var value: [String: RelayJSON] = ["id": .string(id), "title": .string(meta?.title.nilIfEmpty ?? projection?.title.nilIfEmpty ?? snapshot?.title.nilIfEmpty ?? "新任务"), "projectId": .string(projectID), "projectName": .string(projectName), "source": .string("official-relay"), "status": .string(state), "updatedAt": date(meta?.updatedAt ?? snapshot?.raw["session"]["updatedAt"].number), "pinned": .bool(meta?.pinned ?? false), "archived": .bool(archived),

@@ -108,38 +108,16 @@ struct PadShell: View {
             }
 
             if let selectedDevice {
-                Section("项目") {
-                    ForEach(selectedDevice.workspaces) { workspace in
-                        Button { selectWorkspace(workspace) } label: {
-                            HStack(spacing: 10) {
-                                Image(systemName: "folder")
-                                    .font(.system(size: 15, weight: .medium))
-                                    .foregroundStyle(.secondary)
-                                    .frame(width: 24)
-                                VStack(alignment: .leading, spacing: 2) {
-                                    Text(workspace.title).foregroundStyle(.primary).lineLimit(1)
-                                    Text(workspace.isActive ? "当前项目" : "上次同步")
-                                        .font(.caption).foregroundStyle(.secondary)
-                                }
-                                Spacer(minLength: 4)
-                                Text("\(workspace.sessions.count)")
-                                    .font(.caption).foregroundStyle(.tertiary)
-                                if workspace.isActive {
-                                    Image(systemName: "checkmark")
-                                        .font(.system(size: 11, weight: .semibold))
-                                        .foregroundStyle(ZTheme.accent)
-                                } else {
-                                    Image(systemName: "icloud.slash")
-                                        .font(.system(size: 10))
-                                        .foregroundStyle(.tertiary)
-                                }
-                            }
-                            .padding(.vertical, 3)
-                            .contentShape(Rectangle())
-                        }
-                        .buttonStyle(.plain)
-                        .listRowBackground(selectedWorkspace?.id == workspace.id
-                                           ? Color.accentColor.opacity(0.14) : Color.clear)
+                let projects = selectedDevice.workspaces.filter { $0.purpose != "conversation" }
+                let conversations = selectedDevice.workspaces.filter { $0.purpose == "conversation" }
+                if !projects.isEmpty {
+                    Section("项目") {
+                        ForEach(projects) { workspace in workspaceRow(workspace, kind: "项目") }
+                    }
+                }
+                if !conversations.isEmpty {
+                    Section("对话") {
+                        ForEach(conversations) { workspace in workspaceRow(workspace, kind: "对话") }
                     }
                 }
             }
@@ -240,7 +218,8 @@ struct PadShell: View {
                         Text(session.title).font(.system(size: 16)).lineLimit(1)
                     }
                     HStack(spacing: 5) {
-                        Text(session.projectName).font(.caption).lineLimit(1)
+                        Text(workspace.purpose == "conversation" ? "对话" : session.projectName)
+                            .font(.caption).lineLimit(1)
                         Text("·").font(.caption)
                         Text(session.updatedAt, style: .relative).font(.caption)
                     }.foregroundStyle(.secondary)
@@ -275,6 +254,40 @@ struct PadShell: View {
                 Button("设置", systemImage: "gearshape") { store.sheet = .settings }
             } label: { Image(systemName: "ellipsis") }
         }
+    }
+
+    @ViewBuilder
+    private func workspaceRow(_ workspace: HomeWorkspaceGroup, kind: String) -> some View {
+        Button { selectWorkspace(workspace) } label: {
+            HStack(spacing: 10) {
+                Image(systemName: kind == "对话" ? "bubble.left.and.bubble.right" : "folder")
+                    .font(.system(size: 15, weight: .medium))
+                    .foregroundStyle(.secondary)
+                    .frame(width: 24)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(workspace.title).foregroundStyle(.primary).lineLimit(1)
+                    Text(workspace.isActive ? "当前\(kind)" : "上次同步")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+                Spacer(minLength: 4)
+                Text("\(workspace.sessions.count)")
+                    .font(.caption).foregroundStyle(.tertiary)
+                if workspace.isActive {
+                    Image(systemName: "checkmark")
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundStyle(ZTheme.accent)
+                } else {
+                    Image(systemName: "icloud.slash")
+                        .font(.system(size: 10))
+                        .foregroundStyle(.tertiary)
+                }
+            }
+            .padding(.vertical, 3)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .listRowBackground(selectedWorkspace?.id == workspace.id
+                           ? Color.accentColor.opacity(0.14) : Color.clear)
     }
 
     private func selectDevice(_ device: HomeDeviceGroup) {

@@ -457,12 +457,12 @@ struct HomeView: View {
                     .rotationEffect(.degrees(collapsed.contains(section.id) ? -90 : 0))
                     .frame(width: 14, height: 30)
             }.buttonStyle(.plain)
-            Image(systemName: "folder")
+            Image(systemName: section.workspace.purpose == "conversation" ? "bubble.left.and.bubble.right" : "folder")
                 .font(.system(size: 15, weight: .medium)).foregroundStyle(.secondary)
             VStack(alignment: .leading, spacing: 2) {
                 Text(section.projectName).font(.system(size: 17, weight: .semibold)).lineLimit(1)
                 if selectedDeviceID == nil || section.device.workspaces.count > 1 {
-                    Text("\(section.device.name) · \(section.workspace.title)")
+                    Text("\(section.device.name) · \(section.workspace.purpose == "conversation" ? "对话" : section.workspace.title)")
                         .font(.system(size: 11)).foregroundStyle(.secondary).lineLimit(1)
                 }
             }

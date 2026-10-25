@@ -424,10 +424,17 @@ final class AppStore {
         profileReadingStates = states
     }
 
-    static func workspaceDisplayName(path: String, projectName: String? = nil) -> String {
+    static func workspaceDisplayName(label: String?, path: String, purpose: String?,
+                                     latestSessionTitle: String?) -> String {
         let last = (path as NSString).lastPathComponent
-        if last.hasPrefix("draft-") { return "草稿项目" }
-        if let projectName, !projectName.isEmpty, !projectName.hasPrefix("draft-") { return projectName }
+        let conversation = purpose == "conversation"
+            || path.contains("/workspace/draft-")
+            || last.hasPrefix("draft-")
+        if conversation {
+            if let latestSessionTitle, !latestSessionTitle.isEmpty { return latestSessionTitle }
+            return "未命名对话"
+        }
+        if let label, !label.isEmpty { return label }
         return last.isEmpty ? "项目" : last
     }
 
@@ -452,9 +459,14 @@ final class AppStore {
                 let sessions = isActive ? self.sessions : (cached?.sessions ?? [])
                 let projects = isActive ? self.projects : (cached?.projects ?? [])
                 let path = profile.relayWorkspaceKey ?? projects.first?.path ?? profile.baseURL
-                let projectName = isActive ? projects.first?.name : cached?.projects.first?.name
-                let title = Self.workspaceDisplayName(path: path, projectName: projectName)
+                let relayWorkspace = relayWorkspaces.first { $0.id == profile.relayWorkspaceKey }
+                let purpose = profile.relayWorkspacePurpose ?? relayWorkspace?.workspacePurpose
+                let label = profile.relayWorkspaceLabel ?? relayWorkspace?.label
+                let latestTitle = sessions.max { $0.updatedAt < $1.updatedAt }?.title
+                let title = Self.workspaceDisplayName(label: label, path: path, purpose: purpose,
+                                                      latestSessionTitle: latestTitle)
                 return HomeWorkspaceGroup(id: profile.id, profile: profile, title: title, path: path,
+                                          purpose: purpose,
                                           isActive: isActive, isConnected: isActive && connection.isOnline,
                                           cachedAt: cached?.savedAt, sessions: sessions, projects: projects)
             }.sorted { lhs, rhs in
@@ -1456,7 +1468,8 @@ final class AppStore {
                 let existing = profiles.first { sameDevice($0) && $0.relayWorkspaceKey == workspace.id }
                 let profile = ConnectionProfile(id: existing?.id ?? UUID().uuidString,
                     name: displayName, baseURL: pairing.profileURL.absoluteString,
-                    relayDeviceID: pairing.deviceID, relayWorkspaceKey: workspace.id, relayServiceID: pairing.serviceID)
+                    relayDeviceID: pairing.deviceID, relayWorkspaceKey: workspace.id, relayServiceID: pairing.serviceID,
+                    relayWorkspaceLabel: workspace.label, relayWorkspacePurpose: workspace.workspacePurpose)
                 try CredentialStore.save(raw, id: profile.id)
                 deviceProfiles.append(profile)
             }
