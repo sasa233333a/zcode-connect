@@ -6,6 +6,7 @@ struct MessageView: View {
     @Environment(AppStore.self) private var store
     let message: ChatMessage
     let sessionID: String
+    var density: ConversationDensity = .standard
     var showsResponseActions = false
     var hasFollowingResponse = false
     var showsToolGroupSummary = true
@@ -51,7 +52,8 @@ struct MessageView: View {
                 }
                 attachmentLabels
                 if !message.changes.isEmpty {
-                    changeSummary.padding(.top, -4)
+                    if density == .concise { compactChangeSummary.padding(.top, -4) }
+                    else { changeSummary.padding(.top, -4) }
                 }
                 if message.isStreaming {
                     HStack(spacing: 6) {
@@ -59,8 +61,13 @@ struct MessageView: View {
                         Text("正在继续…").font(.caption).foregroundStyle(.secondary)
                     }
                 } else if message.role == .assistant && showsResponseActions && !message.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                    responseActions.padding(.top, -6)
-                        .accessibilityIdentifier("message.responseActions.\(message.id)")
+                    if density == .concise {
+                        compactResponseActions.padding(.top, -6)
+                            .accessibilityIdentifier("message.responseActions.\(message.id)")
+                    } else {
+                        responseActions.padding(.top, -6)
+                            .accessibilityIdentifier("message.responseActions.\(message.id)")
+                    }
                 }
             }
         }.frame(maxWidth: .infinity, alignment: .leading)
@@ -103,6 +110,65 @@ struct MessageView: View {
         .background(Color(uiColor: .secondarySystemBackground), in: RoundedRectangle(cornerRadius: 19))
         .clipShape(RoundedRectangle(cornerRadius: 19))
         .overlay(RoundedRectangle(cornerRadius: 19).strokeBorder(ZTheme.separator, lineWidth: 0.5))
+    }
+
+    private var compactChangeSummary: some View {
+        Button { store.sheet = .files(sessionID, true) } label: {
+            HStack(spacing: 6) {
+                Image(systemName: "doc.text").font(.system(size: 12, weight: .medium))
+                Text("修改 \(message.changes.count) 个文件").font(.system(size: 13, weight: .medium))
+                ChangeCount(additions: message.changes.reduce(0) { $0 + $1.additions },
+                            deletions: message.changes.reduce(0) { $0 + $1.deletions })
+                Image(systemName: "chevron.right").font(.system(size: 10, weight: .semibold))
+            }
+            .foregroundStyle(.secondary)
+            .padding(.horizontal, 11).frame(height: 30)
+            .background(Color(uiColor: .secondarySystemBackground), in: Capsule())
+            .overlay(Capsule().strokeBorder(ZTheme.separator, lineWidth: 0.5))
+            .contentShape(Capsule())
+        }.buttonStyle(.plain)
+            .accessibilityLabel("修改 \(message.changes.count) 个文件，查看文件")
+    }
+
+    private var compactResponseActions: some View {
+        HStack(spacing: 6) {
+            Spacer()
+            Menu {
+                Button("复制", systemImage: "square.on.square") { store.copy(message.text) }
+                Button {
+                    store.toggleLocalFeedback(1, messageID: message.id, sessionID: sessionID)
+                } label: {
+                    Label(feedback == 1 ? "取消有帮助" : "有帮助",
+                          systemImage: feedback == 1 ? "hand.thumbsup.fill" : "hand.thumbsup")
+                }
+                Button {
+                    store.toggleLocalFeedback(-1, messageID: message.id, sessionID: sessionID)
+                } label: {
+                    Label(feedback == -1 ? "取消没有帮助" : "没有帮助",
+                          systemImage: feedback == -1 ? "hand.thumbsdown.fill" : "hand.thumbsdown")
+                }
+                if store.isReferenceMode || (message.forkTarget != nil && store.session(sessionID)?.canFork == true) {
+                    Button {
+                        store.forkSession(sessionID, target: message.forkTarget ?? (store.isReferenceMode ? MessageForkTarget(rowId: 0, entityId: message.id) : nil))
+                    } label: {
+                        Label("创建分支", systemImage: "arrow.triangle.branch")
+                    }
+                    .disabled(store.isForking(sessionID))
+                } else {
+                    ShareLink(item: message.text) { Label("分享", systemImage: "square.and.arrow.up") }
+                }
+                if store.showTimestamps {
+                    Divider()
+                    Button(timestampLabel) {}.disabled(true)
+                }
+            } label: {
+                Image(systemName: "ellipsis")
+                    .font(.system(size: 16, weight: .semibold))
+                    .frame(width: 28, height: 24).contentShape(Rectangle())
+            }.accessibilityLabel("回复操作")
+        }
+        .font(.system(size: 15)).foregroundStyle(.secondary)
+        .buttonStyle(.plain).padding(.vertical, 2)
     }
 
     private var responseActions: some View {

@@ -442,7 +442,8 @@ public actor RelayClient {
                         "kind": .string("clientHello"), "protocolVersion": .int(3), "clientId": .string(self.clientID),
                         "clientKind": .string("mobileApp"),
                         "appVersion": .string(Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "unknown"),
-                        "capabilities": .object(["workspaceHookReviewUi": .bool(true)])
+                        "capabilities": .object(["workspaceHookReviewUi": .bool(true),
+                                                   "historyFirst": .bool(true)])
                     ])
                     return hello["capabilities"]["workspaceHookReview"].bool == true
                 }

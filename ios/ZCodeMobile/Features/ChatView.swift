@@ -84,10 +84,13 @@ struct ChatView: View {
         let headerState = "\(store.streamConnected)|\(store.cachedTranscriptIDs.contains(sessionID))|\(store.transcriptLoadErrors[sessionID] ?? "")|\(store.histories[sessionID]?.hasMore ?? false)|\(store.loadingHistory.contains(sessionID))|\(store.messages(sessionID).isEmpty)|\(session?.isArchived ?? false)"
         result.append(.init(id: "transcript-header", revision: headerState.hashValue, content: AnyView(transcriptHeader.environment(store))))
         result += turns.map { turn in
-            let content = TranscriptTurnView(turn: turn, sessionID: sessionID, allowsAutoCollapse: followsBottom || keepSentBubble)
+            let content = TranscriptTurnView(turn: turn, sessionID: sessionID, density: store.conversationDensity,
+                                             allowsAutoCollapse: followsBottom || keepSentBubble)
                 .frame(minHeight: turnReadingHeight(turn.id), alignment: .top)
                 .environment(store)
-            return .init(id: turn.id, revision: turn.hashValue ^ turnReadingHeight(turn.id).hashValue ^ (followsBottom || keepSentBubble).hashValue, content: AnyView(content))
+            return .init(id: turn.id, revision: turn.hashValue ^ turnReadingHeight(turn.id).hashValue
+                            ^ (followsBottom || keepSentBubble).hashValue ^ store.conversationDensity.rawValue.hashValue,
+                         content: AnyView(content))
         }
         result += (store.queuedInputs[sessionID] ?? []).map { item in
             .init(id: "queued-bubble:" + item.id, revision: String(describing: item).hashValue ^ queueReadingHeight(item.id).hashValue,
