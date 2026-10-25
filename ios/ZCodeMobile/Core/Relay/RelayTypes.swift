@@ -254,6 +254,8 @@ public struct RelayPairing: Sendable, CustomStringConvertible, CustomDebugString
 
 public struct RelayWorkspace: Codable, Sendable, Equatable, Identifiable {
     public let kind: String
+    public let label: String?
+    public let workspacePurpose: String?
     public let workspacePath: String
     public let workspaceIdentity: String?
     public let remoteSessionId: String?

@@ -309,6 +309,8 @@ struct ConnectionProfile: Identifiable, Codable, Hashable {
     var relayDeviceID: String?
     var relayWorkspaceKey: String?
     var relayServiceID: String?
+    var relayWorkspaceLabel: String? = nil
+    var relayWorkspacePurpose: String? = nil
     var isRelay: Bool { relayDeviceID != nil }
 }
 
@@ -320,6 +322,7 @@ struct HomeWorkspaceGroup: Identifiable, Equatable {
     var profile: ConnectionProfile
     var title: String
     var path: String
+    var purpose: String?
     var isActive: Bool
     var isConnected: Bool
     var cachedAt: Date?
