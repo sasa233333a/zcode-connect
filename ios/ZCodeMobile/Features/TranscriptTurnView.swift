@@ -5,14 +5,18 @@ import SwiftUI
 struct TranscriptTurnView: View {
     let turn: TranscriptTurn
     let sessionID: String
+    var density: ConversationDensity = .standard
     var allowsAutoCollapse = true
     @State private var processExpanded: Bool
 
-    init(turn: TranscriptTurn, sessionID: String, allowsAutoCollapse: Bool = true) {
+    init(turn: TranscriptTurn, sessionID: String,
+         density: ConversationDensity = .standard,
+         allowsAutoCollapse: Bool = true) {
         self.turn = turn
         self.sessionID = sessionID
+        self.density = density
         self.allowsAutoCollapse = allowsAutoCollapse
-        _processExpanded = State(initialValue: !turn.defaultCollapsed)
+        _processExpanded = State(initialValue: density.expandsProcess(for: turn))
     }
     @State private var inspectingTool = false
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -20,52 +24,109 @@ struct TranscriptTurnView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             ForEach(turn.userMessages) { message in
-                MessageView(message: message, sessionID: sessionID, showsResponseActions: false)
-                    .padding(.top, 12).padding(.bottom, 34).id(message.id)
+                MessageView(message: message, sessionID: sessionID, density: density, showsResponseActions: false)
+                    .padding(.top, density == .concise ? 8 : 12)
+                    .padding(.bottom, density == .concise ? 18 : 34)
+                    .id(message.id)
             }
             if !turn.processMessages.isEmpty {
                 VStack(alignment: .leading, spacing: 0) {
-                    if turn.canCollapseProcess {
+                    if showsProcessToggle {
                         Button {
                             withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.28)) { processExpanded.toggle() }
                         } label: {
-                            HStack(spacing: 8) {
-                                Image(systemName: "list.bullet").font(.system(size: 17, weight: .regular)).frame(width: 22).accessibilityHidden(true)
-                                Text(processTitle)
-                                Spacer(minLength: 8)
-                                Image(systemName: processExpanded ? "chevron.down" : "chevron.right").font(.system(size: 13, weight: .semibold)).frame(width: 16)
-                            }.font(.subheadline).foregroundStyle(.secondary).frame(minHeight: 28)
+                            processSummary
                         }.buttonStyle(.plain)
                             .accessibilityValue(processExpanded ? "已展开" : "已折叠")
                             .accessibilityIdentifier("turn.process.\(turn.id)")
                             .transition(reduceMotion ? .identity : .opacity)
+                    } else {
+                        processSummary
+                            .accessibilityIdentifier("turn.process.\(turn.id)")
                     }
                     if processExpanded {
                         processContent.transition(reduceMotion ? .identity : .opacity)
+                    } else if density == .concise, !turn.isComplete, let live = turn.latestProcessText {
+                        RichMessageText(text: live.text, user: false, streaming: live.isStreaming)
+                            .equatable()
+                            .padding(.top, 8)
+                            .transition(reduceMotion ? .identity : .opacity)
                     }
                 }
                 .onPreferenceChange(ToolInspectionPreferenceKey.self) { inspectingTool = $0 }
-                .padding(.bottom, 22)
+                .padding(.bottom, density == .concise ? 12 : 22)
             }
             ForEach(turn.resultMessages) { message in
-                MessageView(message: message, sessionID: sessionID,
+                MessageView(message: message, sessionID: sessionID, density: density,
                             showsResponseActions: turn.actionMessageID == message.id)
-                    .padding(.bottom, 22).id(message.id)
+                    .padding(.bottom, density == .concise ? 14 : 22).id(message.id)
                     .transition(reduceMotion ? .identity : .opacity)
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .onChange(of: turn.hasConfirmedResult) { _, complete in
-            let needsAttention = turn.processMessages.contains { $0.steps.contains { $0.status == .failed || $0.status == .waiting } }
-            if complete, allowsAutoCollapse, !inspectingTool, !needsAttention {
+            if complete, density != .detailed, allowsAutoCollapse, !inspectingTool, !turn.needsAttention {
                 withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.28)) { processExpanded = false }
+            }
+        }
+        .onChange(of: turn.needsAttention) { _, attention in
+            if density == .concise, attention {
+                withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.28)) { processExpanded = true }
+            }
+        }
+        .onChange(of: density) { _, value in
+            withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.28)) {
+                processExpanded = value.expandsProcess(for: turn)
             }
         }
         .animation(reduceMotion ? nil : .easeInOut(duration: 0.28), value: turn.hasConfirmedResult)
     }
 
+    private var showsProcessToggle: Bool {
+        density == .concise || turn.canCollapseProcess
+    }
+
+    @ViewBuilder private var processSummary: some View {
+        if density == .concise, !turn.isComplete {
+            TimelineView(.periodic(from: .now, by: 1)) { context in
+                summaryRow(turn.activitySummary(at: context.date))
+            }
+        } else {
+            summaryRow(density == .concise ? turn.activitySummary(at: .now) : processTitle)
+        }
+    }
+
+    private func summaryRow(_ text: String) -> some View {
+        HStack(spacing: 8) {
+            Image(systemName: summarySymbol)
+                .font(.system(size: 17, weight: .regular)).frame(width: 22)
+                .accessibilityHidden(true)
+            Text(text).lineLimit(1).truncationMode(.middle).monospacedDigit()
+            Spacer(minLength: 8)
+            if showsProcessToggle {
+                Image(systemName: processExpanded ? "chevron.down" : "chevron.right")
+                    .font(.system(size: 13, weight: .semibold)).frame(width: 16)
+            }
+        }
+        .font(.subheadline).foregroundStyle(summaryColor).frame(minHeight: 28)
+        .contentShape(Rectangle())
+    }
+
+    private var summarySymbol: String {
+        if let step = turn.latestActiveStep, step.status == .running { return step.activityKind.symbol }
+        if turn.hasFailedStep || turn.state == .failed { return "exclamationmark.triangle" }
+        if turn.hasWaitingStep { return "clock" }
+        return "list.bullet"
+    }
+
+    private var summaryColor: Color {
+        if turn.hasFailedStep || turn.state == .failed { return .red }
+        if turn.hasWaitingStep { return .orange }
+        return .secondary
+    }
+
     private var processTitle: String {
-        let count = turn.processMessages.reduce(0) { $0 + $1.steps.count }
+        let count = turn.toolCount
         let status: String = switch turn.state {
         case .completed: "已完成"
         case .interrupted: "已中断"
@@ -83,7 +144,7 @@ struct TranscriptTurnView: View {
 
     private var processContent: some View {
         ForEach(turn.processMessages) { message in
-            MessageView(message: message, sessionID: sessionID, showsResponseActions: false,
+            MessageView(message: message, sessionID: sessionID, density: density, showsResponseActions: false,
                         hasFollowingResponse: hasFollowingResponse(after: message.id),
                         showsToolGroupSummary: !turn.canCollapseProcess || inspectingTool)
                 .padding(.bottom, message.text.isEmpty ? 0 : 16).id(message.id)

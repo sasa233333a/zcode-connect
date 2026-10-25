@@ -141,7 +141,7 @@ struct ConversationPreview: View {
                 ScrollView {
                     LazyVStack(alignment: .leading, spacing: 22) {
                         ForEach(TranscriptPresentation.group(messages).suffix(3)) { turn in
-                            TranscriptTurnView(turn: turn, sessionID: sessionID)
+                            TranscriptTurnView(turn: turn, sessionID: sessionID, density: store.conversationDensity)
                         }
                     }.padding(16)
                 }

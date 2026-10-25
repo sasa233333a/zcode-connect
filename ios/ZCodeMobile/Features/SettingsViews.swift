@@ -16,7 +16,7 @@ struct SettingsView: View {
     private var settingsForm: some View {
         @Bindable var store = store
         return Form {
-            Section("外观") {
+            Section {
                 Picker("颜色", selection: $store.appearance) {
                     ForEach(["跟随系统", "浅色", "深色"], id: \.self) { Text($0) }
                 }
@@ -30,10 +30,19 @@ struct SettingsView: View {
                         Text(ThemePreferences.shared.selection.label).foregroundStyle(.secondary)
                     }
                 }.accessibilityIdentifier("settings.theme")
+                Picker("对话显示", selection: $store.conversationDensity) {
+                    ForEach(ConversationDensity.allCases) { density in
+                        Text(density.label).tag(density)
+                    }
+                }.accessibilityIdentifier("settings.conversationDensity")
                 Toggle("触感反馈", isOn: $store.hapticsEnabled)
                 Toggle("显示时间", isOn: $store.showTimestamps)
                 Toggle("显示上下文用量", isOn: $store.showContextUsage)
                     .accessibilityIdentifier("settings.contextUsage")
+            } header: {
+                Text("外观")
+            } footer: {
+                Text("简洁：只显示最终回答和一行执行摘要，点摘要展开过程。标准：保留完整的思考、工具和操作栏。详细：执行过程默认全部展开。")
             }
             Section {
                 Toggle("任务通知", isOn: $store.completionNotifications)
@@ -92,6 +101,7 @@ struct SettingsView: View {
         .onChange(of: store.hapticsEnabled) { store.savePreferences() }
         .onChange(of: store.showContextUsage) { store.savePreferences() }
         .onChange(of: store.showTimestamps) { store.savePreferences() }
+        .onChange(of: store.conversationDensity) { store.savePreferences() }
         .onChange(of: store.completionNotifications) {
             store.savePreferences()
             if store.completionNotifications { Task { await TaskNotifications.shared.requestAuthorizationIfNeeded() } }

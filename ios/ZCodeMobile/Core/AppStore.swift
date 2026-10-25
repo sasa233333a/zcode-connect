@@ -99,6 +99,7 @@ final class AppStore {
     private var contextRevisions: [String: Int] = [:]
     var showContextUsage = true
     var showTimestamps = true
+    var conversationDensity: ConversationDensity = .concise
     var bridgeVersion: String?
     var streamConnected = false
     var models: [RemoteModel] = []
@@ -247,6 +248,9 @@ final class AppStore {
         hapticsEnabled = defaults.object(forKey: "haptics") as? Bool ?? true
         showContextUsage = defaults.object(forKey: "showContextUsage") as? Bool ?? true
         showTimestamps = defaults.object(forKey: "timestamps") as? Bool ?? true
+        conversationDensity = defaults.string(forKey: "conversationDensity")
+            .flatMap(ConversationDensity.init(rawValue:))
+            ?? (UIDevice.current.userInterfaceIdiom == .pad ? .standard : .concise)
         liveActivitiesEnabled = defaults.object(forKey: "liveActivities") as? Bool ?? true
         completionNotifications = defaults.object(forKey: "completionNotifications") as? Bool ?? true
 
@@ -256,6 +260,10 @@ final class AppStore {
 
         #if DEBUG
         let args = ProcessInfo.processInfo.arguments
+        if let index = args.firstIndex(of: "--conversation-density"), args.count > index + 1,
+           let value = ConversationDensity(rawValue: args[index + 1]) {
+            conversationDensity = value
+        }
         if args.contains("--reference") {
             referenceReview = args.contains("--visual-review")
             enterReferenceMode()
@@ -327,6 +335,7 @@ final class AppStore {
                     do { pendingInteractions[ReferenceData.conversationID] = [try ReferenceData.hookReviewInteraction(expired: args[index + 1] == "hooks-expired")] }
                     catch { errorMessage = "无法读取审查体验数据：\(error.localizedDescription)" }
                 case "files": path = [.session(ReferenceData.conversationID)]; sheet = .files(ReferenceData.conversationID, false)
+                case "settings": sheet = .settings
                 case "advanced": path = [.session(ReferenceData.conversationID)]; sheet = .advanced
                 case "context-review", "context-empty-review", "compact-review", "agents-review":
                     path = [.session(ReferenceData.conversationID)]
@@ -771,6 +780,25 @@ final class AppStore {
         let ok = await connectDiscoveredDevice(device)
         RelayTestLog.write("discover connect ok=\(ok) online=\(connection.isOnline) workspaces=\(relayWorkspaces.count) sessions=\(sessions.count) active=\(activeProfile?.relayWorkspaceKey ?? "nil")")
         if openFirstTask { await relayTestOpenFirstTask() }
+        if let index = ProcessInfo.processInfo.arguments.firstIndex(of: "--relay-test-session"),
+           ProcessInfo.processInfo.arguments.count > index + 1 {
+            await relayTestOpenSession(ProcessInfo.processInfo.arguments[index + 1])
+        }
+        if ProcessInfo.processInfo.arguments.contains("--relay-test-earlier"), let id = currentSessionID {
+            for _ in 0..<40 {
+                if histories[id] != nil { break }
+                try? await Task.sleep(for: .milliseconds(250))
+            }
+            for page in 0..<3 {
+                RelayTestLog.write("earlier \(page) before=\(histories[id]?.beforeRowId ?? -1) loaded=\(histories[id]?.loadedRowCount ?? -1) hasMore=\(histories[id]?.hasMore ?? false)")
+                await loadEarlierMessages(id)
+                for _ in 0..<40 {
+                    if !loadingHistory.contains(id) { break }
+                    try? await Task.sleep(for: .milliseconds(250))
+                }
+            }
+            RelayTestLog.write("earlier done loaded=\(histories[id]?.loadedRowCount ?? -1) total=\(histories[id]?.totalRowCount ?? -1) hasMore=\(histories[id]?.hasMore ?? false)")
+        }
         if ProcessInfo.processInfo.arguments.contains("--relay-test-image") { await relayTestUploadImage() }
         if ProcessInfo.processInfo.arguments.contains("--relay-test-switch") {
             let currentID = activeProfileID
@@ -819,6 +847,20 @@ final class AppStore {
         if ProcessInfo.processInfo.arguments.contains("--relay-test-home") {
             path = []
         }
+    }
+
+    private func relayTestOpenSession(_ id: String) async {
+        RelayTestLog.write("session catalog " + sessions.map { "\($0.id):\($0.title)" }.joined(separator: " | "))
+        for _ in 0..<80 {
+            if session(id) != nil || homeDeviceGroups.flatMap(\.workspaces).contains(where: { $0.sessions.contains { $0.id == id } }) { break }
+            try? await Task.sleep(for: .milliseconds(250))
+        }
+        openSessionEverywhere(id)
+        for _ in 0..<80 {
+            if currentSessionID == id { break }
+            try? await Task.sleep(for: .milliseconds(250))
+        }
+        RelayTestLog.write("requested session \(id) current=\(currentSessionID ?? "nil") online=\(connection.isOnline)")
     }
 
     private func relayTestOpenFirstTask() async {
@@ -1922,6 +1964,9 @@ final class AppStore {
             cachedTranscriptIDs.remove(id)
             cacheTranscript(id)
             histories[id] = detail.history
+            #if DEBUG
+            RelayTestLog.write("transcript \(id) messages=\(merged.count) loaded=\(detail.history?.loadedRowCount ?? -1) total=\(detail.history?.totalRowCount ?? -1) hasMore=\(detail.history?.hasMore ?? false)")
+            #endif
             if (queueRevisions[id] ?? 0) <= revision { queuedInputs[id] = detail.queue ?? [] }
             await reconcilePendingSubmissions(id)
             guard epoch == connectionEpoch, transcriptRequests[id] == request else { return }
@@ -2963,6 +3008,7 @@ final class AppStore {
         defaults.set(hapticsEnabled, forKey: "haptics")
         defaults.set(showContextUsage, forKey: "showContextUsage")
         defaults.set(showTimestamps, forKey: "timestamps")
+        defaults.set(conversationDensity.rawValue, forKey: "conversationDensity")
         defaults.set(completionNotifications, forKey: "completionNotifications")
         defaults.set(liveActivitiesEnabled, forKey: "liveActivities")
     }

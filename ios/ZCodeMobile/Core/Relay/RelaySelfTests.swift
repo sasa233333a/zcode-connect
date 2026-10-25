@@ -257,7 +257,7 @@ actor MockRelaySocket: RelaySocketTransport {
                 try success(id, conversationHello ?? .object(["kind": .string("hello"), "protocolVersion": .int(3), "connectionId": .string("mock-conversation"), "clientMode": .string("web-remote-replayable"), "deliveryProfile": .string("replayable"), "serverTime": .int(1_700_000_000_000), "capabilities": .object(["nativeDialogs": .bool(false), "localTerminal": .bool(false), "binaryFrames": .bool(false), "compression": .string("none"), "workspaceHookReview": .bool(true)]), "auth": .object([:])]))
             case "initializeConversationV4":
                 try require(Set(try params.requiringObject().keys) == ["kind", "protocolVersion", "clientId", "clientKind", "appVersion", "capabilities"], "ClientHello fields differ from the strict official schema")
-                try require(params["kind"].string == "clientHello" && params["protocolVersion"].integer == 3 && params["clientKind"].string == "mobileApp" && params["capabilities"] == .object(["workspaceHookReviewUi": .bool(true)]), "The complete native hook UI was not advertised")
+                try require(params["kind"].string == "clientHello" && params["protocolVersion"].integer == 3 && params["clientKind"].string == "mobileApp" && params["capabilities"] == .object(["workspaceHookReviewUi": .bool(true), "historyFirst": .bool(true)]), "The complete native hook UI and history-first capability were not advertised")
                 clientHellos.append(params); conversationInitialized = true; try success(id, .null)
             case "listTasks", "listPinnedTasks", "listArchivedTasks":
                 let tasks = registeredSessions.filter { archivedSessions.contains($0) == (method == "listArchivedTasks") }

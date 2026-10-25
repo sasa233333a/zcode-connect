@@ -1,5 +1,28 @@
 import Foundation
 
+enum ConversationDensity: String, CaseIterable, Identifiable, Sendable {
+    case concise, standard, detailed
+
+    var id: String { rawValue }
+    var label: String {
+        switch self {
+        case .concise: "简洁"
+        case .standard: "标准"
+        case .detailed: "详细"
+        }
+    }
+    /// Concise mode compacts every turn; standard keeps today's live detail;
+    /// detailed starts settled turns open as well.
+    func expandsProcess(for turn: TranscriptTurn) -> Bool {
+        guard !turn.processMessages.isEmpty else { return false }
+        switch self {
+        case .concise: return turn.needsAttention
+        case .standard: return !turn.defaultCollapsed
+        case .detailed: return true
+        }
+    }
+}
+
 struct TranscriptTurn: Identifiable, Hashable {
     let id: String
     let messages: [ChatMessage]
@@ -59,5 +82,65 @@ enum TranscriptPresentation {
             }
             return .init(id: key, messages: values, userMessages: users, processMessages: process, resultMessages: results, state: state)
         }
+    }
+}
+
+extension TranscriptTurn {
+    var reasoningCount: Int {
+        processMessages.reduce(0) { count, message in
+            let reasoning = message.reasoning?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            return count + (reasoning.isEmpty ? 0 : 1)
+        }
+    }
+    var toolCount: Int { processMessages.reduce(0) { $0 + $1.steps.count } }
+    var hasFailedStep: Bool { processMessages.contains { $0.steps.contains { $0.status == .failed } } }
+    var hasWaitingStep: Bool { processMessages.contains { $0.steps.contains { $0.status == .waiting } } }
+    var needsAttention: Bool { state == .failed || state == .interrupted || hasFailedStep || hasWaitingStep }
+    var latestActiveStep: ToolStep? {
+        let steps = processMessages.flatMap(\.steps)
+        return steps.last { $0.status == .waiting } ?? steps.last { $0.status == .running }
+    }
+    var latestProcessText: ChatMessage? {
+        processMessages.last { !$0.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+    }
+
+    /// One line for the compact phone transcript: current tool while working,
+    /// then reasoning/tool counts and duration once the turn settles.
+    func activitySummary(at now: Date) -> String {
+        if let step = latestActiveStep {
+            let detail = step.activitySummary.trimmingCharacters(in: .whitespacesAndNewlines)
+            var live = [detail.isEmpty ? step.activityStatus : "\(step.activityStatus) \(detail)"]
+            if let duration = durationText(at: now) { live.append(duration) }
+            return live.joined(separator: " · ")
+        }
+        if state == .running {
+            var live = [latestProcessText == nil ? "正在工作" : "正在回复"]
+            if let duration = durationText(at: now) { live.append(duration) }
+            return live.joined(separator: " · ")
+        }
+        var parts: [String] = []
+        switch state {
+        case .failed: parts.append("执行失败")
+        case .interrupted: parts.append("已中断")
+        default: break
+        }
+        if reasoningCount > 0 { parts.append("思考 \(reasoningCount)") }
+        if toolCount > 0 { parts.append("工具 \(toolCount)") }
+        if let duration = durationText(at: now) { parts.append(duration) }
+        return parts.isEmpty ? "执行过程" : parts.joined(separator: " · ")
+    }
+
+    func durationText(at now: Date) -> String? {
+        if let elapsed = processMessages.compactMap(\.elapsed).last(where: { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }) {
+            return elapsed
+        }
+        let dates = messages.map(\.createdAt)
+        guard let start = dates.min() else { return nil }
+        let end = isComplete ? (dates.max() ?? now) : now
+        let seconds = max(0, Int(end.timeIntervalSince(start).rounded()))
+        guard seconds > 0 else { return nil }
+        if seconds < 60 { return "\(seconds) 秒" }
+        let minutes = seconds / 60, remainder = seconds % 60
+        return remainder == 0 ? "\(minutes) 分钟" : "\(minutes) 分 \(remainder) 秒"
     }
 }
