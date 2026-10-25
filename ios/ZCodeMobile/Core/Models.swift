@@ -338,17 +338,6 @@ struct HomeDeviceGroup: Identifiable, Equatable {
     var workspaces: [HomeWorkspaceGroup]
 }
 
-enum TaskNotificationKind: String, Sendable {
-    case completed, waiting, failed
-}
-
-struct TaskNotificationEvent: Sendable, Equatable {
-    var kind: TaskNotificationKind
-    var sessionID: String
-    var title: String
-    var body: String
-}
-
 enum AppRoute: Hashable {
     case session(String)
     case newSession

@@ -75,7 +75,6 @@ final class AppStore {
     var selectedProjectID: String?
     var appearance = "跟随系统"
     var hapticsEnabled = true
-    var liveActivitiesEnabled = true
     var reconnectAttempt = 0
     var isAutoReconnecting = false
     private struct CachedReadingState: Codable {
@@ -222,12 +221,6 @@ final class AppStore {
     @ObservationIgnored private var profileReadingStates: [String: CachedReadingState] = [:]
     @ObservationIgnored private let networkMonitor = NetworkMonitor()
     @ObservationIgnored private var pendingOpenSessionID: String?
-    @ObservationIgnored private var notifiedInteractionIDs: Set<String> = []
-    @ObservationIgnored private var notifiedWaitingSessionIDs: Set<String> = []
-    @ObservationIgnored var notificationEventSink: ((TaskNotificationEvent) -> Void)?
-    /// Called whenever task status changes, independent of SwiftUI view updates.
-    @ObservationIgnored var activitySyncSink: (() -> Void)?
-    @ObservationIgnored var activityEndSink: (() -> Void)?
 
     init(defaults: UserDefaults = .standard,
          reconnectDelay: @escaping @Sendable (Duration) async throws -> Void = { try await Task.sleep(for: $0) }) {
@@ -251,8 +244,6 @@ final class AppStore {
         conversationDensity = defaults.string(forKey: "conversationDensity")
             .flatMap(ConversationDensity.init(rawValue:))
             ?? (UIDevice.current.userInterfaceIdiom == .pad ? .standard : .concise)
-        liveActivitiesEnabled = defaults.object(forKey: "liveActivities") as? Bool ?? true
-        completionNotifications = defaults.object(forKey: "completionNotifications") as? Bool ?? true
 
         do { try loadScopedState() }
         catch { errorMessage = "无法恢复待发送消息：\(error.localizedDescription)" }
@@ -536,11 +527,10 @@ final class AppStore {
     }
     var canManageGoals: Bool { isReferenceMode }
 
-    // MARK: Index watch & task notifications
+    // MARK: Index watch & deep links
 
-    var completionNotifications = true
     @ObservationIgnored private var indexWatchTask: Task<Void, Never>?
-    @ObservationIgnored private var pendingNotificationSessionID: String?
+    @ObservationIgnored private var pendingSessionRouteID: String?
 
     /// While tasks are running the home index self-heals: the desktop's push can be
     /// lost on a weak link, and a task stopped on the desktop must not spin forever.
@@ -561,13 +551,8 @@ final class AppStore {
         }
     }
 
-    func openFromNotification(_ sessionID: String) {
-        guard !isReferenceMode else { return }
-        openSessionEverywhere(sessionID)
-    }
-
-    /// A notification or Live Activity can outlive a switch to another saved
-    /// computer. Reconnect to the workspace that owns the session before routing.
+    /// A deep link can outlive a switch to another saved computer. Reconnect to
+    /// the workspace that owns the session before routing.
     func openSessionEverywhere(_ sessionID: String) {
         guard !isReferenceMode else { return }
         if session(sessionID) != nil { path = [.session(sessionID)]; return }
@@ -577,56 +562,19 @@ final class AppStore {
             Task { await switchAndOpen(workspace.profile, sessionID: sessionID) }
             return
         }
-        pendingNotificationSessionID = sessionID
+        pendingSessionRouteID = sessionID
     }
 
     func openDeepLink(_ url: URL) {
         guard url.scheme?.lowercased() == "zcodemobile", url.host == "session",
               let id = url.pathComponents.dropFirst().first, !id.isEmpty else { return }
-        openFromNotification(String(id))
+        openSessionEverywhere(String(id))
     }
 
-    private func consumePendingNotification() {
-        guard let id = pendingNotificationSessionID else { return }
-        pendingNotificationSessionID = nil
+    private func consumePendingSessionRoute() {
+        guard let id = pendingSessionRouteID else { return }
+        pendingSessionRouteID = nil
         if session(id) != nil { path = [.session(id)] }
-    }
-
-    /// Only a live transition notifies: loading history that was already in a
-    /// terminal state, or watching that session itself, must stay silent.
-    private func notifyTransition(id: String, previous: SessionStatus?, current: SessionStatus) {
-        guard completionNotifications, !isReferenceMode, let previous, previous != current,
-              !isApplicationActive || currentSessionID != id else { return }
-        let title = sessions.first { $0.id == id }?.title ?? hostName
-        switch current {
-        case .completed:
-            notifiedWaitingSessionIDs.remove(id)
-            notificationEventSink?(.init(kind: .completed, sessionID: id, title: title,
-                                         body: "电脑上的任务已完成。"))
-        case .waiting:
-            // The status event and the interaction event usually arrive back to
-            // back; only the first one should surface a banner.
-            guard notifiedWaitingSessionIDs.insert(id).inserted else { return }
-            notificationEventSink?(.init(kind: .waiting, sessionID: id, title: title,
-                                         body: "电脑上的任务正在等待你的确认。"))
-        case .failed:
-            notifiedWaitingSessionIDs.remove(id)
-            notificationEventSink?(.init(kind: .failed, sessionID: id, title: title,
-                                         body: "任务遇到问题，请打开查看。"))
-        default:
-            notifiedWaitingSessionIDs.remove(id)
-        }
-    }
-
-    /// A new approval or input request is actionable even when the task status
-    /// itself was already "waiting"; dedupe per interaction instead of per status.
-    private func notifyInteraction(id: String, interaction: PendingInteraction) {
-        guard completionNotifications, !isReferenceMode, !isApplicationActive || currentSessionID != id,
-              notifiedWaitingSessionIDs.insert(id).inserted,
-              notifiedInteractionIDs.insert(id + "|" + interaction.id).inserted else { return }
-        let title = sessions.first { $0.id == id }?.title ?? hostName
-        notificationEventSink?(.init(kind: .waiting, sessionID: id, title: title,
-                                     body: interaction.title.isEmpty ? "任务在等待你的确认。" : interaction.title))
     }
 
     func start() async {
@@ -1157,7 +1105,6 @@ final class AppStore {
             await refresh()
             return
         }
-        activityEndSink?()
         // Switching projects on the same computer keeps the existing relay
         // socket and bridge session. Re-pairing here races the old controller
         // and can be rejected as "another phone took over".
@@ -1178,7 +1125,6 @@ final class AppStore {
             } catch is CancellationError {
             } catch {
                 errorMessage = error.localizedDescription
-                activitySyncSink?()
             }
             return
         }
@@ -1728,7 +1674,6 @@ final class AppStore {
     }
 
     func disconnect() {
-        activityEndSink?()
         cancelAutomaticConnection()
         if !isReferenceMode, let profile = activeProfile { setAutomaticConnectionBlock("manual_disconnect", profileID: profile.id) }
         tearDownConnection()
@@ -1787,8 +1732,6 @@ final class AppStore {
         loadingAgentDirectories = []; agentDirectoryErrors = [:]
         slashCommandsBySession = [:]
         rejectedSubmissionIDs = []
-        notifiedInteractionIDs = []
-        notifiedWaitingSessionIDs = []
     }
 
     func removeConnection(_ profile: ConnectionProfile) {
@@ -1902,14 +1845,13 @@ final class AppStore {
         sessions = merged
         models = modelResponse.models
         cacheReadingState()
-        activitySyncSink?()
         for session in sessionResponse.sessions {
             if remoteSettings[session.id] == nil, !changingSettings.contains(session.id), let provider = session.providerId, let model = session.model {
                 modelSelections[session.id] = ModelSelection(providerId: provider, modelId: model, thoughtLevel: session.thoughtLevel)
             }
         }
         if !projects.contains(where: { $0.id == selectedProjectID }) { selectedProjectID = projects.first?.id }
-        consumePendingNotification()
+        consumePendingSessionRoute()
         if let id = pendingOpenSessionID, sessions.contains(where: { $0.id == id }) {
             pendingOpenSessionID = nil
             path = [.session(id)]
@@ -3009,32 +2951,24 @@ final class AppStore {
         defaults.set(showContextUsage, forKey: "showContextUsage")
         defaults.set(showTimestamps, forKey: "timestamps")
         defaults.set(conversationDensity.rawValue, forKey: "conversationDensity")
-        defaults.set(completionNotifications, forKey: "completionNotifications")
-        defaults.set(liveActivitiesEnabled, forKey: "liveActivities")
     }
     private func setStatus(_ id: String, _ status: SessionStatus) {
         eventRevision += 1
         sessionRevisions[id] = eventRevision
-        let previous = sessions.first { $0.id == id }?.status
         if let i = sessions.firstIndex(where: { $0.id == id }) {
             sessions[i].status = status
             sessions[i].updatedAt = .now
         }
         observeAnswerCompletion(id)
-        notifyTransition(id: id, previous: previous, current: status)
-        activitySyncSink?()
     }
     private func upsert(_ session: RemoteSession) {
         if session.source == "official-relay-subagent" {
             childSessions[persistenceScope + "|" + session.id] = session
             return
         }
-        let previous = sessions.first { $0.id == session.id }?.status
         if let i = sessions.firstIndex(where: { $0.id == session.id }) { sessions[i] = session }
         else { sessions.insert(session, at: 0) }
         observeAnswerCompletion(session.id)
-        notifyTransition(id: session.id, previous: previous, current: session.status)
-        activitySyncSink?()
     }
     private func decorate(_ session: RemoteSession) -> RemoteSession {
         // Metadata always reflects the host. Legacy local preferences remain stored
@@ -3119,13 +3053,10 @@ final class AppStore {
                 interactionRevisions[id] = eventRevision
                 pendingInteractions[id, default: []].removeAll { $0.id == interaction.id }
                 pendingInteractions[id, default: []].append(interaction)
-                notifyInteraction(id: id, interaction: interaction)
-                activitySyncSink?()
             }
             if let interactionID = event.data?.interactionId {
                 interactionRevisions[id] = eventRevision
                 pendingInteractions[id]?.removeAll { $0.id == interactionID }
-                activitySyncSink?()
             }
             if event.type != "runtime.event" { dirtySessionIDs.insert(id) }
         }

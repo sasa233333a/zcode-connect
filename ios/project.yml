@@ -10,8 +10,8 @@ settings:
     TARGETED_DEVICE_FAMILY: "1,2"
     DEVELOPMENT_TEAM: ""
     CODE_SIGN_STYLE: Automatic
-    CURRENT_PROJECT_VERSION: 12
-    MARKETING_VERSION: "1.0.12"
+    CURRENT_PROJECT_VERSION: 14
+    MARKETING_VERSION: "1.0.14"
     GENERATE_INFOPLIST_FILE: YES
     INFOPLIST_KEY_CFBundleDisplayName: Zcode
     INFOPLIST_KEY_LSApplicationCategoryType: public.app-category.developer-tools
@@ -36,37 +36,16 @@ targets:
       properties:
         NSAppTransportSecurity:
           NSAllowsLocalNetworking: true
-        NSSupportsLiveActivities: true
         CFBundleShortVersionString: $(MARKETING_VERSION)
         CFBundleVersion: $(CURRENT_PROJECT_VERSION)
         CFBundleURLTypes:
           - CFBundleURLName: dev.paco.zcode.mobile
             CFBundleURLSchemes:
               - zcodemobile
-    dependencies:
-      - target: ZCodeMobileWidget
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: dev.paco.zcode.mobile
         "CODE_SIGN_ENTITLEMENTS[sdk=iphonesimulator*]": ZCodeMobile/Resources/Simulator.entitlements
-  ZCodeMobileWidget:
-    type: app-extension
-    platform: iOS
-    sources:
-      - path: ZCodeMobileWidget
-      - path: ZCodeMobile/Shared/TaskActivityAttributes.swift
-    info:
-      path: ZCodeMobileWidget/Info.plist
-      properties:
-        CFBundleDisplayName: Zcode 实时活动
-        NSExtension:
-          NSExtensionPointIdentifier: com.apple.widgetkit-extension
-    settings:
-      base:
-        PRODUCT_BUNDLE_IDENTIFIER: dev.paco.zcode.mobile.widget
-        SKIP_INSTALL: YES
-        APPLICATION_EXTENSION_API_ONLY: YES
-        INFOPLIST_KEY_CFBundleDisplayName: Zcode 实时活动
   ZCodeMobileTests:
     type: bundle.unit-test
     platform: iOS

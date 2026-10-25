@@ -20,8 +20,7 @@ It is an independently developed native iOS client with a Liquid Glass interface
 - **Connect to a computer once**: sign in and the App discovers computers already online on the same account, with no QR or per-project setup. You land directly in projects and conversations.
 - **Browse by project**: conversations are grouped by project; opening a conversation in another project switches the workspace in the background without reconnecting or re-pairing.
 - **iPad landscape**: a native three-column split view (computers/projects, conversations, chat) that collapses to the single-column layout in narrow windows.
-- **Automatic reconnection**: retry after network changes, returning to the foreground, or a brief relay interruption, with a manual retry in the banner.
-- **Notifications and Dynamic Island**: get notified when a task completes, waits for approval, or fails, and see the active task on the Dynamic Island and Lock Screen.
+- **Automatic reconnection**: retry after network changes, returning to the foreground, or a brief relay interruption; pull to refresh for an immediate retry.
 - **Slash commands and mentions**: type `/` for the desktop's real slash commands and `@` to pick files from the current project.
 - **Copy and links**: select and copy messages, tool details, and code; Markdown links and bare URLs open directly.
 - **Follow your agents**: view sub-agent progress and conversations as a task moves forward.
@@ -40,8 +39,6 @@ The App supports Simplified Chinese, English, Japanese, French, Korean, and Germ
 5. Choose a project, open a task, and carry on.
 
 **Your computer must stay awake and online, with ZCode running.** The App is free; your chosen model providers or third-party services may charge separately. Keep pairing codes and links private: they contain connection credentials.
-
-Notifications and Live Activity updates require the App to be running or recently backgrounded. iOS does not let a normal App keep a WebSocket alive indefinitely in the background: the Dynamic Island timer keeps counting after suspension, but status refreshes when you reopen the App. Fully background real-time alerts need push support (APNs) from the desktop or relay service.
 
 You do not need your own server to use the official relay. Self-hosting is an advanced option that requires a separately configured server and desktop. Cloning this repository does not set those up for you.
 
