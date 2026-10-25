@@ -76,6 +76,10 @@ struct PadShell: View {
                 self.selectedWorkspaceID = workspaces.first(where: \.isActive)?.id ?? workspaces.first?.id
             }
         }
+        .task { await store.resumeConnectionIfNeeded() }
+        .onChange(of: selectedDeviceID) { _, _ in
+            Task { await store.resumeConnectionIfNeeded() }
+        }
     }
 
     private var sidebar: some View {
@@ -95,7 +99,11 @@ struct PadShell: View {
                             }
                             Spacer(minLength: 4)
                             if device.isActive {
-                                Circle().fill(deviceStatusColor(device)).frame(width: 8, height: 8)
+                                if store.isAutoReconnecting || store.connection == .connecting {
+                                    ProgressView().controlSize(.mini).frame(width: 12, height: 12)
+                                } else {
+                                    Circle().fill(deviceStatusColor(device)).frame(width: 8, height: 8)
+                                }
                             }
                         }
                         .padding(.vertical, 3)
@@ -140,25 +148,6 @@ struct PadShell: View {
         Group {
             if let workspace = selectedWorkspace {
                 List {
-                    if !workspace.isActive {
-                        Section {
-                            HStack(spacing: 10) {
-                                if store.isAutoReconnecting || store.connection == .connecting {
-                                    ProgressView().controlSize(.small)
-                                } else {
-                                    Image(systemName: "icloud.slash").foregroundStyle(.secondary)
-                                }
-                                Text(store.isAutoReconnecting || store.connection == .connecting
-                                     ? "正在连接这台电脑…" : "显示上次同步的内容")
-                                    .font(.caption).foregroundStyle(.secondary)
-                                Spacer()
-                                if !store.connection.isOnline && !store.isAutoReconnecting {
-                                    Button("重新连接") { Task { await store.retryConnectionNow() } }
-                                        .font(.caption.weight(.semibold))
-                                }
-                            }
-                        }
-                    }
                     if sessions.isEmpty {
                         ContentUnavailableView {
                             Label("暂无任务", systemImage: "bubble.left.and.bubble.right")
@@ -178,6 +167,7 @@ struct PadShell: View {
                     }
                 }
                 .listStyle(.insetGrouped)
+                .refreshable { await store.refreshOrReconnect() }
                 .searchable(text: $search, placement: .navigationBarDrawer(displayMode: .always), prompt: "搜索聊天")
                 .navigationTitle(workspace.title)
                 .navigationBarTitleDisplayMode(.inline)
@@ -326,7 +316,6 @@ struct PadShell: View {
 
     private func deviceStatusColor(_ device: HomeDeviceGroup) -> Color {
         if !device.isActive { return .gray }
-        if store.isAutoReconnecting { return .orange }
         return store.connection.isOnline ? .green : .gray
     }
 

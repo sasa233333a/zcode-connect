@@ -83,7 +83,7 @@ struct AppShell: View {
                 if store.completionNotifications, store.hasConnectedBefore, !isRelayTestRun {
                     Task { await TaskNotifications.shared.requestAuthorizationIfNeeded() }
                 }
-                Task { await store.applicationDidBecomeActive() }
+                Task { await store.applicationDidBecomeActive(); await store.resumeConnectionIfNeeded() }
             } else if phase == .background {
                 store.applicationDidEnterBackground()
                 TaskNotifications.shared.beginBackgroundWindowIfRunning()

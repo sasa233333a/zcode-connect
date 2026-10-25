@@ -125,7 +125,6 @@ struct HomeView: View {
         VStack(spacing: 0) {
             if !store.isReferenceMode {
                 deviceBar
-                reconnectBanner
             }
             Group {
                 if !store.connection.isOnline && store.sessions.isEmpty && store.profiles.isEmpty {
@@ -221,16 +220,16 @@ struct HomeView: View {
         .onChange(of: renameAvailable) { _, available in
             if !available { renameSession = nil; renameScope = nil }
         }
+        .task { await store.resumeConnectionIfNeeded() }
+        .onChange(of: selectedDeviceID) { _, _ in
+            Task { await store.resumeConnectionIfNeeded() }
+        }
     }
 
     private var statusColor: Color {
         guard let selectedDevice else { return store.connection.isOnline ? .green : .gray }
         if !selectedDevice.isActive { return .gray }
-        if store.isAutoReconnecting { return .orange }
-        if store.connection.isOnline {
-            return store.isReferenceMode || store.streamConnected ? .green : .orange
-        }
-        return .gray
+        return store.connection.isOnline ? .green : .gray
     }
 
     private var statusTitle: String {
@@ -239,10 +238,6 @@ struct HomeView: View {
         }
         if !selectedDevice.isActive {
             return "\(selectedDevice.name) · 上次同步"
-        }
-        if store.isAutoReconnecting { return "\(store.hostName) · 正在重连" }
-        if store.connection.isOnline && !store.isReferenceMode && !store.streamConnected {
-            return "\(store.hostName) · 正在重连"
         }
         return store.hostName
     }
@@ -256,12 +251,13 @@ struct HomeView: View {
                 }
                 ForEach(store.homeDeviceGroups) { device in
                     deviceChip(title: device.name, symbol: "desktopcomputer", selected: selectedDeviceID == device.id,
-                               dot: device.isActive ? statusColorFor(device) : nil) {
+                               dot: device.isActive ? statusColorFor(device) : nil,
+                               connecting: device.isActive && (store.connection == .connecting || store.isAutoReconnecting)) {
                         selectedDeviceID = device.id
                         if !device.isActive, let profile = preferredProfile(for: device) {
                             Task { await store.switchComputer(profile, confirmedControllerReplacement: true) }
                         } else if device.isActive, !store.connection.isOnline {
-                            Task { await store.retryConnectionNow() }
+                            Task { await store.resumeConnectionIfNeeded() }
                         }
                     }
                 }
@@ -279,14 +275,16 @@ struct HomeView: View {
 
     private func statusColorFor(_ device: HomeDeviceGroup) -> Color {
         if !device.isActive { return .gray }
-        if store.isAutoReconnecting { return .orange }
-        return store.connection.isOnline ? (store.streamConnected ? .green : .orange) : .gray
+        return store.connection.isOnline ? .green : .gray
     }
 
-    private func deviceChip(title: String, symbol: String, selected: Bool, dot: Color?, action: @escaping () -> Void) -> some View {
+    private func deviceChip(title: String, symbol: String, selected: Bool, dot: Color?, connecting: Bool = false,
+                            action: @escaping () -> Void) -> some View {
         Button(action: action) {
             HStack(spacing: 6) {
-                if let dot {
+                if connecting {
+                    ProgressView().controlSize(.mini).frame(width: 10, height: 10)
+                } else if let dot {
                     Circle().fill(dot).frame(width: 6, height: 6)
                 }
                 Image(systemName: symbol).font(.system(size: 12, weight: .medium))
@@ -297,57 +295,6 @@ struct HomeView: View {
             .background(selected ? Color.primary.opacity(0.10) : Color.clear, in: Capsule())
         }
         .buttonStyle(.plain)
-    }
-
-    @ViewBuilder private var reconnectBanner: some View {
-        if selectedDevice?.isActive != false, store.activeProfile != nil {
-            if store.isAutoReconnecting || store.connection == .connecting {
-                HStack(spacing: 12) {
-                    ProgressView().controlSize(.small)
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text(store.isAutoReconnecting ? "正在重新连接 \(store.hostName)" : "正在连接 \(store.hostName)")
-                            .font(.subheadline.weight(.medium))
-                        Text(store.reconnectAttempt > 1
-                             ? "第 \(store.reconnectAttempt) 次尝试 · 任务仍在电脑上运行"
-                             : "任务仍在电脑上运行")
-                            .font(.caption).foregroundStyle(.secondary)
-                    }
-                    Spacer(minLength: 6)
-                    Button("立即重试") { Task { await store.retryConnectionNow() } }
-                        .font(.caption.weight(.semibold))
-                }
-                .padding(.horizontal, 16).padding(.vertical, 10)
-                .background(Color.orange.opacity(0.10), in: RoundedRectangle(cornerRadius: 14))
-                .padding(.horizontal, 20).padding(.bottom, 8)
-            } else if !store.connection.isOnline {
-                HStack(spacing: 10) {
-                    Image(systemName: "wifi.exclamationmark").foregroundStyle(.orange)
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text(connectionFailureMessage).font(.caption).lineLimit(2)
-                        Text("自动重连已暂停，任务仍在电脑上运行").font(.caption2).foregroundStyle(.secondary)
-                    }
-                    Spacer(minLength: 6)
-                    Button(needsRelayLogin ? "登录账号" : "重新连接") {
-                        if needsRelayLogin { store.sheet = .pairing }
-                        else { Task { await store.retryConnectionNow() } }
-                    }
-                    .font(.caption.weight(.semibold))
-                }
-                .padding(.horizontal, 16).padding(.vertical, 10)
-                .background(Color.orange.opacity(0.10), in: RoundedRectangle(cornerRadius: 14))
-                .padding(.horizontal, 20).padding(.bottom, 8)
-            }
-        }
-    }
-
-    private var needsRelayLogin: Bool {
-        store.activeProfile?.isRelay == true && store.relayAccount == nil
-    }
-
-    private var connectionFailureMessage: String {
-        if needsRelayLogin { return "登录状态已失效，请重新登录 ZCode 账号。" }
-        if case .failed(let message) = store.connection { return message }
-        return "这台电脑尚未连接。"
     }
 
     private var sessionList: some View {
@@ -393,7 +340,7 @@ struct HomeView: View {
             .padding(.horizontal, 20).padding(.top, 18).padding(.bottom, 18)
         }
         .scrollDismissesKeyboard(.interactively)
-        .refreshable { await store.refresh() }
+        .refreshable { await store.refreshOrReconnect() }
         .accessibilityIdentifier("home.sessions")
         .onScrollPhaseChange { _, phase in
             #if DEBUG
@@ -427,7 +374,7 @@ struct HomeView: View {
             } description: {
                 Text("任务保存在电脑上。网络恢复后会自动重新连接。")
             } actions: {
-                Button("立即重试") { Task { await store.retryConnectionNow() } }
+                Button("立即重试") { Task { await store.refreshOrReconnect() } }
                     .buttonStyle(.borderedProminent).buttonBorderShape(.capsule)
             }.padding(.top, 70)
         } else {
