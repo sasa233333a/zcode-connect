@@ -129,6 +129,13 @@ enum ReferenceData {
         RemoteFile(name: "AGENTS.md", path: "AGENTS.md", isDirectory: false, content: "# 示例项目说明\n\n这是展示用的文本，不是助手执行指令。"),
         RemoteFile(name: "PROJECT_NOTES.md", path: "PROJECT_NOTES.md", isDirectory: false, content: "# 示例项目笔记\n\n不包含真实工作区信息。")
     ]
+
+    static let slashCommands: [BridgeSlashCommand] = [
+        BridgeSlashCommand(name: "review", description: "检查当前改动", inputHint: "[范围]", source: "builtin"),
+        BridgeSlashCommand(name: "test", description: "运行项目的测试", inputHint: nil, source: "builtin"),
+        BridgeSlashCommand(name: "commit", description: "创建一次提交", inputHint: "提交说明", source: "builtin"),
+        BridgeSlashCommand(name: "compact", description: "压缩当前对话上下文", inputHint: nil, source: "builtin")
+    ]
 }
 
 extension ReferenceData {

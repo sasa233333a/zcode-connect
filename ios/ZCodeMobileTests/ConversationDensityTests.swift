@@ -70,5 +70,35 @@ final class ConversationDensityTests: XCTestCase {
         let value = turn(process(status: .running, text: "Working on it"), state: .running)
         XCTAssertEqual(value.latestProcessText?.text, "Working on it")
         XCTAssertEqual(value.activitySummary(at: now), "正在回复 · 12 秒")
+        XCTAssertEqual(value.activityIndicator, .replying)
+    }
+
+    func testRunningReplyAfterAFailedStepStaysNeutral() {
+        let value = turn(process([
+            ToolStep(id: "bash", title: "Bash", detail: "", status: .failed)
+        ], status: .running, text: "Trying another approach"), state: .running)
+        XCTAssertTrue(value.hasFailedStep)
+        XCTAssertEqual(value.activitySummary(at: now), "正在回复 · 12 秒")
+        XCTAssertEqual(value.activityIndicator, .replying)
+        XCTAssertEqual(value.activityIndicator.symbol, "ellipsis.bubble")
+    }
+
+    func testOnlySettledFailuresUseTheFailureIndicator() {
+        let running = turn(process([
+            ToolStep(id: "bash", title: "Bash", detail: "", status: .running,
+                     inputJSON: #"{"command":"swift test"}"#)
+        ], status: .running), state: .running)
+        XCTAssertEqual(running.activityIndicator, .tool("terminal"))
+
+        let waiting = turn(process([
+            ToolStep(id: "bash", title: "Bash", detail: "", status: .waiting)
+        ], status: .running), state: .running)
+        XCTAssertEqual(waiting.activityIndicator, .waiting)
+
+        let settled = turn(process([
+            ToolStep(id: "bash", title: "Bash", detail: "", status: .failed)
+        ], status: .failed), state: .failed)
+        XCTAssertEqual(settled.activityIndicator, .failed)
+        XCTAssertEqual(settled.activityIndicator.symbol, "exclamationmark.triangle")
     }
 }

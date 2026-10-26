@@ -58,6 +58,9 @@ actor MockRelaySocket: RelaySocketTransport {
     var historicalRows: [RelayJSON] = []
     var titles: [String: String] = [:]
     var registeredSessions: Set<String> = ["session-test"]
+    var workspaceStateUnavailable = false
+    func enterEmptyWorkspace() { registeredSessions.removeAll(); workspaceStateUnavailable = true }
+    func leaveEmptyWorkspace() { workspaceStateUnavailable = false; registeredSessions = ["session-test", "session-created"] }
     var unreadAt: [String: Double] = [:]
     var unreadClock: Double = 1_700_000_000_123
     var unreadCalls: [RelayJSON] = []
@@ -281,7 +284,11 @@ actor MockRelaySocket: RelaySocketTransport {
                     if holdSessionReads { heldSessionReads.append((id, value)) }
                     else { try success(id, value) }
                 }
-            case "readWorkspaceState": try success(id, .object(["settings": snapshot("session-test")["settings"]]))
+            case "readWorkspaceState":
+                if workspaceStateUnavailable {
+                    try sendRPC(.init(header: [.int32(202), .int32(id)], body: try .object(.object(["message": .string("readWorkspaceState is unavailable")]))))
+                } else { try success(id, .object(["settings": snapshot("session-test")["settings"]])) }
+            case "getTaskConfigOptions": try success(id, .array([]))
             case "conversationRowsRangeV4":
                 let before = params["beforeRowId"].integer ?? Int.max, limit = params["limit"].integer!
                 let rows = historicalRows.filter { $0["rowId"].integer! < before }, page = Array(rows.suffix(limit))

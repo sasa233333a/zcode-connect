@@ -53,6 +53,7 @@
 		94CD302ED229E843F6F24E8A /* FilesView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4A4D7C8E7CE4761317F95DCD /* FilesView.swift */; };
 		98F6A79CD0AAA11960B4E25F /* RemoteTransport.swift in Sources */ = {isa = PBXBuildFile; fileRef = 80D6C75AA2778163A00C8080 /* RemoteTransport.swift */; };
 		9A8C4C3EE5C16F9C8284476B /* InlineVoiceControls.swift in Sources */ = {isa = PBXBuildFile; fileRef = 225CA0B05DD2A628608717DE /* InlineVoiceControls.swift */; };
+		9D11461EBE4E7F385CD12B35 /* ComposerSuggestionUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 181D7689A93DCDAB71D7EB5D /* ComposerSuggestionUITests.swift */; };
 		9FD171208F5CD3DD1A834471 /* AppShell.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6E0938A2133E3D48B30D3017 /* AppShell.swift */; };
 		A181415D339C84655032CB8C /* InteractionRequestCard.swift in Sources */ = {isa = PBXBuildFile; fileRef = B0CD8F37F99DAEF744330653 /* InteractionRequestCard.swift */; };
 		A5CB4A81B801A88E3930D646 /* MessageAttachmentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = E4264777A6D6711FC4B96C08 /* MessageAttachmentView.swift */; };
@@ -107,6 +108,7 @@
 		1650BD18D480EE8324FEE664 /* RelayAgentGoalSelfTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RelayAgentGoalSelfTests.swift; sourceTree = "<group>"; };
 		17A6E3792041A4C193271AAE /* RelaySelfTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RelaySelfTests.swift; sourceTree = "<group>"; };
 		17ADF86538C2ABF99B736DA8 /* RelayClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RelayClient.swift; sourceTree = "<group>"; };
+		181D7689A93DCDAB71D7EB5D /* ComposerSuggestionUITests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ComposerSuggestionUITests.swift; sourceTree = "<group>"; };
 		202BC01ACF9D25645498BFE1 /* ReferenceData.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReferenceData.swift; sourceTree = "<group>"; };
 		225CA0B05DD2A628608717DE /* InlineVoiceControls.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = InlineVoiceControls.swift; sourceTree = "<group>"; };
 		2CD15E50100F477B7A156853 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
@@ -252,6 +254,7 @@
 		807A9675E9368559F7AB6B42 /* ZCodeMobileUITests */ = {
 			isa = PBXGroup;
 			children = (
+				181D7689A93DCDAB71D7EB5D /* ComposerSuggestionUITests.swift */,
 				D37A01FD042DDF58F6F51067 /* ConversationDensityUITests.swift */,
 			);
 			path = ZCodeMobileUITests;
@@ -476,6 +479,7 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				9D11461EBE4E7F385CD12B35 /* ComposerSuggestionUITests.swift in Sources */,
 				2BFFBF6588D3079AAC1E05D5 /* ConversationDensityUITests.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
@@ -615,7 +619,7 @@
 				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
 				CODE_SIGN_STYLE = Automatic;
 				COPY_PHASE_STRIP = NO;
-				CURRENT_PROJECT_VERSION = 14;
+				CURRENT_PROJECT_VERSION = 15;
 				DEBUG_INFORMATION_FORMAT = dwarf;
 				DEVELOPMENT_TEAM = "";
 				ENABLE_STRICT_OBJC_MSGSEND = YES;
@@ -646,7 +650,7 @@
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
 				IPHONEOS_DEPLOYMENT_TARGET = 26.0;
-				MARKETING_VERSION = 1.0.14;
+				MARKETING_VERSION = 1.0.15;
 				MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
 				MTL_FAST_MATH = YES;
 				ONLY_ACTIVE_ARCH = YES;
@@ -745,7 +749,7 @@
 				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
 				CODE_SIGN_STYLE = Automatic;
 				COPY_PHASE_STRIP = NO;
-				CURRENT_PROJECT_VERSION = 14;
+				CURRENT_PROJECT_VERSION = 15;
 				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
 				DEVELOPMENT_TEAM = "";
 				ENABLE_NS_ASSERTIONS = NO;
@@ -770,7 +774,7 @@
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
 				IPHONEOS_DEPLOYMENT_TARGET = 26.0;
-				MARKETING_VERSION = 1.0.14;
+				MARKETING_VERSION = 1.0.15;
 				MTL_ENABLE_DEBUG_INFO = NO;
 				MTL_FAST_MATH = YES;
 				PRODUCT_NAME = "$(TARGET_NAME)";

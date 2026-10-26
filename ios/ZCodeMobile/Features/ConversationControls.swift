@@ -8,6 +8,7 @@ struct ConversationControls: View {
     @State private var editGoal = false
     @State private var reasoningPresented = false
     @State private var confirmDeleteGoal = false
+    private var backgroundWorks: [BackgroundWork] { store.backgroundWorks[sessionID] ?? [] }
 
     var body: some View {
         VStack(spacing: 16) {
@@ -16,7 +17,7 @@ struct ConversationControls: View {
                     .padding(.horizontal, 38)
                     .transition(.opacity.combined(with: .move(edge: .bottom)))
             }
-            if store.goals[sessionID] != nil || store.agentCount(sessionID) > 0 {
+            if store.goals[sessionID] != nil || store.agentCount(sessionID) > 0 || !backgroundWorks.isEmpty {
                 HStack(spacing: 8) {
                     if store.goals[sessionID] != nil {
                         Button { toggle("goal") } label: {
@@ -50,6 +51,28 @@ struct ConversationControls: View {
                                 set: { if !$0, selectedPanel == "agents" { selectedPanel = nil } }
                             ), preferredWidth: 364) { panel("agents") }
                     }
+                    if !backgroundWorks.isEmpty {
+                        Button { toggle("background") } label: {
+                            Label {
+                                Text("\(backgroundWorks.count) 后台")
+                            } icon: {
+                                Image(systemName: "terminal")
+                                    .font(.system(size: 15, weight: .medium))
+                                    .frame(width: 17, height: 17)
+                            }
+                                .font(.system(size: 13)).lineLimit(1)
+                                .padding(.horizontal, 9).frame(height: 32)
+                        }.buttonStyle(.plain)
+                            .foregroundStyle(selectedPanel == "background" ? Color.white : .secondary)
+                            .glassEffect(ZTheme.controlGlass.tint(selectedPanel == "background" ? .black : .clear).interactive(), in: Capsule())
+                            .accessibilityLabel("\(backgroundWorks.count) 个后台任务")
+                            .accessibilityIdentifier("chat.backgroundWorks")
+                            .measureLayout("background.pill")
+                            .nativeFloatingPanel(isPresented: Binding(
+                                get: { selectedPanel == "background" },
+                                set: { if !$0, selectedPanel == "background" { selectedPanel = nil } }
+                            ), preferredWidth: 364) { panel("background") }
+                    }
                 }.padding(.horizontal, 42)
                     .blur(radius: reasoningPresented ? 4 : 0)
                     .allowsHitTesting(!reasoningPresented)
@@ -68,6 +91,9 @@ struct ConversationControls: View {
         }
         .onChange(of: store.agentCount(sessionID)) { _, count in
             if count == 0 && selectedPanel == "agents" { selectedPanel = nil }
+        }
+        .onChange(of: backgroundWorks.count) { _, count in
+            if count == 0 && selectedPanel == "background" { selectedPanel = nil }
         }
         .sheet(isPresented: $editGoal) { GoalEditorView(sessionID: sessionID) }
         .confirmationDialog("移除这个目标？", isPresented: $confirmDeleteGoal, titleVisibility: .visible) {
@@ -111,6 +137,35 @@ struct ConversationControls: View {
                 }.font(.system(size: 18)).foregroundStyle(.secondary)
             }.padding(.horizontal, 12).padding(.vertical, 8).glassEffect(ZTheme.controlGlass, in: RoundedRectangle(cornerRadius: 17))
                 .measureLayout("goal.panel")
+        } else if name == "background" {
+            VStack(alignment: .leading, spacing: 8) {
+                HStack {
+                    Text("后台任务").font(.system(size: 12, weight: .medium)).foregroundStyle(.secondary)
+                    Spacer()
+                    Text("\(backgroundWorks.filter { $0.status == .running }.count) 个运行中")
+                        .font(.system(size: 12)).foregroundStyle(.secondary)
+                }
+                ScrollView {
+                    LazyVStack(spacing: 6) {
+                        ForEach(backgroundWorks) { work in
+                            HStack(spacing: 11) {
+                                Image(systemName: work.symbol)
+                                    .font(.system(size: 14, weight: .medium))
+                                    .foregroundStyle(work.status == .failed ? .red : .secondary)
+                                    .frame(width: 18)
+                                VStack(alignment: .leading, spacing: 3) {
+                                    Text(work.title).font(.system(size: 13, weight: .medium))
+                                        .foregroundStyle(.primary).lineLimit(2)
+                                    Text(work.statusText).font(.system(size: 12)).foregroundStyle(.secondary)
+                                }
+                                Spacer(minLength: 6)
+                                if work.status == .running { ProgressView().controlSize(.small) }
+                            }.frame(minHeight: 44)
+                        }
+                    }
+                }.frame(height: backgroundListHeight)
+            }.padding(12)
+                .measureLayout("background.panel")
         } else {
             VStack(alignment: .leading, spacing: 8) {
                 ScrollView {
@@ -170,6 +225,10 @@ struct ConversationControls: View {
     private var agentListHeight: CGFloat {
         let count = min(4, (store.agentTasks[sessionID] ?? []).count)
         return count == 0 ? 64 : min(300, CGFloat(count * 44 + max(0, count - 1) * 6 + agentGroups.count * 30))
+    }
+    private var backgroundListHeight: CGFloat {
+        let count = min(4, backgroundWorks.count)
+        return count == 0 ? 64 : min(300, CGFloat(count * 44 + max(0, count - 1) * 6 + 24))
     }
 
     private func toggle(_ panel: String) {

@@ -80,7 +80,15 @@ struct AppShell: View {
         UIDevice.current.userInterfaceIdiom == .pad
             && horizontalSizeClass == .regular
             && !store.requiresInitialConnection
-            && !store.isReferenceMode
+            && (!store.isReferenceMode || isPadLayoutReview)
+    }
+
+    private var isPadLayoutReview: Bool {
+        #if DEBUG
+        ProcessInfo.processInfo.arguments.contains("--pad-layout-review")
+        #else
+        false
+        #endif
     }
 
     private func phoneShell(path: Binding<[AppRoute]>) -> some View {

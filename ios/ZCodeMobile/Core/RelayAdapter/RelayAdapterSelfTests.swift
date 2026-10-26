@@ -172,6 +172,20 @@ private actor AdapterEvents {
         try expect(await mock.configurationThought == "max", "Thinking level changed")
         checks.append("durable_empty_create_idempotency_and_permission_preference_preserves_plan")
 
+        await mock.enterEmptyWorkspace()
+        let emptyBody: [String: JSONValue] = ["projectId": .string(projectID), "clientDraftId": .string("empty-first-draft"),
+            "mode": .string("yolo"), "title": .string("First task in an empty workspace"), "confirmFullAccess": .bool(true)]
+        let emptyCreated: RelayJSON = try await adapter.mutate("v1/sessions", body: emptyBody)
+        try expect(emptyCreated["session"]["id"].string == "session-created", "Empty workspace creation failed")
+        let emptyEnvelopes = await mock.commandEnvelopes
+        let emptyConfig = emptyEnvelopes.values.first {
+            $0["type"].string == "createSession" && $0["payload"]["config"]["mode"].string == "yolo"
+        }?["payload"]["config"]
+        try expect(emptyConfig?["mode"].string == "yolo" && emptyConfig?["provider"] == .null && emptyConfig?["model"] == .null,
+                   "Empty workspace create did not use the desktop default model")
+        checks.append("empty_workspace_first_task_uses_mode_only_creation_config")
+        await mock.leaveEmptyWorkspace()
+
         let upload: [String: JSONValue] = ["fileName": .string("note.txt"), "mimeType": .string("text/plain"), "base64": .string(Data("hello".utf8).base64EncodedString())]
         let first: RelayJSON = try await adapter.mutate("v1/sessions/session-test/attachments", body: upload)
         let attachmentID = first["attachment"]["id"].string!

@@ -478,6 +478,7 @@ public actor RelayClient {
         return try await withTaskCancellationHandler {
             try await withCheckedThrowingContinuation { continuation in
                 let readOnly = ["zcode-task/listTasks", "zcode-task/listPinnedTasks", "zcode-task/listArchivedTasks",
+                                "zcode-task/getTaskConfigOptions",
                                 "zcode-session/readSession", "zcode-agent/readSession", "zcode-agent/listSessionSubagents",
                                 "zcode-agent/helloConversationV4", "zcode-agent/conversationRowsRangeV4",
                                 "zcode-agent/queryConversationCommandsV4"].contains(channel + "/" + method)
@@ -771,7 +772,16 @@ public actor RelayClient {
         guard command.clientId == clientID, RelayWire.validID(command.commandId), command.issuedAt.isFinite else { throw RelayFailure.invalid("Invalid command identity.") }
         let payload = try command.payload.requiringObject()
         if command.type == "createSession" {
-            guard command.sessionId == nil, Set(payload.keys) == ["workspaceId"], let bridge, payload["workspaceId"]?.string == bridge.workspaceKey else { throw RelayFailure.invalid("Creation must target the attached workspace and contain no first input.") }
+            let allowed: Set<String> = ["workspaceId", "config"]
+            guard command.sessionId == nil, Set(payload.keys).isSubset(of: allowed),
+                  let bridge, payload["workspaceId"]?.string == bridge.workspaceKey else { throw RelayFailure.invalid("Creation must target the attached workspace and contain no first input.") }
+            if let config = payload["config"] {
+                guard let fields = config.object,
+                      Set(fields.keys).isSubset(of: ["provider", "model", "thought", "mode"]),
+                      fields.values.allSatisfy({ $0.string != nil }) else {
+                    throw RelayFailure.invalid("Creation config carries an unsupported field.")
+                }
+            }
             return
         }
         guard let sessionID = command.sessionId, !sessionID.isEmpty else { throw RelayFailure.invalid("Missing command session.") }

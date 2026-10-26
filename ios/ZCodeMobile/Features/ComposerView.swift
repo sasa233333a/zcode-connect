@@ -14,6 +14,7 @@ struct ComposerView: View {
     @State private var mentionItems: [RemoteFile] = []
     @State private var activeMentionQuery: String?
     @State private var mentionTask: Task<Void, Never>?
+    @State private var suggestionsDismissed = false
     @State private var attachments: [Attachment] = []
     @State private var attachmentDraftIdentity = ""
     @State private var photoSelections: [PhotosPickerItem] = []
@@ -59,10 +60,10 @@ struct ComposerView: View {
     }
 
     private var slashQuery: String? {
-        let value = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard value.hasPrefix("/"), value.count > 0,
-              !value.dropFirst().contains(where: { $0.isWhitespace }) else { return nil }
-        return String(value.dropFirst())
+        guard text.hasPrefix("/") else { return nil }
+        let rest = text.dropFirst()
+        guard !rest.contains(where: { $0.isWhitespace }) else { return nil }
+        return String(rest)
     }
 
     private var slashSuggestions: [BridgeSlashCommand] {
@@ -71,7 +72,7 @@ struct ComposerView: View {
             slashQuery.isEmpty || $0.name.localizedStandardContains(slashQuery)
                 || $0.description.localizedStandardContains(slashQuery)
         }
-        return Array(matches.prefix(6))
+        return Array(matches.prefix(5))
     }
 
     private var canSend: Bool {
@@ -137,8 +138,14 @@ struct ComposerView: View {
             #if DEBUG
             let args = ProcessInfo.processInfo.arguments
             let screen = args.firstIndex(of: "--screen").flatMap { args.indices.contains($0 + 1) ? args[$0 + 1] : nil }
-            if ["keyboard", "reasoning", "permissions", "context-empty-review"].contains(screen ?? "") { focused = true }
+            if ["keyboard", "reasoning", "permissions", "context-empty-review", "slash-review", "mention-review"].contains(screen ?? "") { focused = true }
             if screen == "reasoning" { showReasoning = true }
+            if screen == "slash-review" { text = "/" }
+            if screen == "mention-review" { text = "@" }
+            if screen == "attachments" {
+                try? await Task.sleep(for: .milliseconds(350))
+                showAttachmentMenu = true
+            }
             if screen == "voice", store.isReferenceMode {
                 focused = true
                 try? await Task.sleep(for: .milliseconds(350))
@@ -211,6 +218,7 @@ struct ComposerView: View {
             if !recording, voicePhase == .recording { finishInlineVoice(sendAfter: false) }
         }
         .onChange(of: text) { _, value in
+            suggestionsDismissed = false
             if sessionID.flatMap({ store.editingQueuedInput[$0] }) == nil { store.setDraft(value, for: draftKey) }
             updateMentionSuggestions(value)
         }
@@ -288,16 +296,12 @@ struct ComposerView: View {
                     }
                 }
             }
-            if !voiceActive {
-                if !slashSuggestions.isEmpty {
-                    suggestionPanel
-                } else if !mentionItems.isEmpty {
-                    mentionPanel
-                }
-            }
             HStack(spacing: 10) {
                 if !expanded && !voiceActive { attachmentMenu }
-                inputField.frame(minHeight: expanded ? 28 : 34, alignment: expanded ? .top : .center)
+                inputField
+                    .frame(minHeight: expanded ? 28 : 34, alignment: expanded ? .top : .center)
+                    .nativeFloatingPanel(isPresented: suggestionPanelPresented, preferredWidth: 360,
+                                         cornerRadius: 44, dismissesOnBackgroundTap: false) { suggestionPanel }
                 if !expanded && !voiceActive {
                     microphoneButton
                     primaryButton
@@ -350,47 +354,64 @@ struct ComposerView: View {
     }
 
 
-    private var suggestionPanel: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            ForEach(slashSuggestions) { command in
-                Button { applyCommand(command) } label: {
-                    HStack(alignment: .top, spacing: 10) {
-                        Text("/" + command.name)
-                            .font(.system(size: 15, weight: .semibold))
-                            .foregroundStyle(ZTheme.accent)
-                            .frame(minWidth: 82, alignment: .leading)
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text(command.description).font(.system(size: 13)).foregroundStyle(.primary)
-                            if let hint = command.inputHint, !hint.isEmpty {
-                                Text(hint).font(.system(size: 11)).foregroundStyle(.tertiary).lineLimit(1)
-                            }
-                        }
-                        Spacer(minLength: 0)
-                    }
-                    .padding(.vertical, 7).contentShape(Rectangle())
-                }.buttonStyle(.plain)
-            }
-        }
-        .padding(.horizontal, 10).padding(.vertical, 5)
-        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 14))
+    private var suggestionPanelPresented: Binding<Bool> {
+        Binding(get: {
+            focused && !suggestionsDismissed
+                && (!slashSuggestions.isEmpty || (activeMentionQuery != nil && !mentionItems.isEmpty))
+        }, set: { if !$0 { suggestionsDismissed = true } })
     }
 
-    private var mentionPanel: some View {
+    @ViewBuilder private var suggestionPanel: some View {
+        if !slashSuggestions.isEmpty { slashSuggestionPanel }
+        else { mentionSuggestionPanel }
+    }
+
+    private var slashSuggestionPanel: some View {
         VStack(alignment: .leading, spacing: 0) {
-            ForEach(mentionItems.prefix(8)) { file in
-                Button { applyMention(file) } label: {
-                    HStack(spacing: 8) {
-                        Image(systemName: file.isDirectory ? "folder" : "doc.text")
-                            .font(.system(size: 13)).foregroundStyle(.secondary)
-                        Text(file.path).font(.system(size: 13)).lineLimit(1)
-                        Spacer(minLength: 0)
-                    }
-                    .padding(.vertical, 6).contentShape(Rectangle())
+            suggestionHeader("命令")
+            ForEach(slashSuggestions) { command in
+                Button { applyCommand(command) } label: {
+                    suggestionRow(symbol: "command", title: "/" + command.name,
+                                  subtitle: command.inputHint.map { "\(command.description) · \($0)" } ?? command.description)
                 }.buttonStyle(.plain)
+                    .accessibilityIdentifier("composer.slashSuggestion.\(command.name)")
             }
         }
-        .padding(.horizontal, 10).padding(.vertical, 5)
-        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 14))
+        .padding(.vertical, 8)
+    }
+
+    private var mentionSuggestionPanel: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            suggestionHeader("文件")
+            ForEach(mentionItems.prefix(5)) { file in
+                Button { applyMention(file) } label: {
+                    suggestionRow(symbol: file.isDirectory ? "folder" : "doc.text",
+                                  title: file.name,
+                                  subtitle: file.path == file.name ? (file.isDirectory ? "文件夹" : "文件") : file.path)
+                }.buttonStyle(.plain)
+                    .accessibilityIdentifier("composer.mentionSuggestion.\(file.path)")
+            }
+        }
+        .padding(.vertical, 8)
+    }
+
+    private func suggestionHeader(_ title: String) -> some View {
+        Text(title).font(.system(size: 12, weight: .semibold)).foregroundStyle(.secondary)
+            .padding(.horizontal, 28).padding(.top, 10).padding(.bottom, 4)
+    }
+
+    private func suggestionRow(symbol: String, title: String, subtitle: String) -> some View {
+        HStack(spacing: 16) {
+            Image(systemName: symbol).font(.system(size: 19, weight: .medium))
+                .frame(width: 44, height: 44)
+                .background(Color.primary.opacity(0.045), in: Circle())
+            VStack(alignment: .leading, spacing: 2) {
+                Text(title).font(.system(size: 17, weight: .medium)).lineLimit(1)
+                Text(subtitle).font(.system(size: 12)).foregroundStyle(.secondary).lineLimit(1)
+            }
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, 28).frame(minHeight: 60).contentShape(Rectangle())
     }
 
     private func applyCommand(_ command: BridgeSlashCommand) {
@@ -410,18 +431,19 @@ struct ComposerView: View {
     private func updateMentionSuggestions(_ value: String) {
         mentionTask?.cancel()
         mentionTask = nil
-        mentionItems = []
         guard store.connection.isOnline,
               let at = value.lastIndex(of: "@"),
               let projectID = (sessionID.flatMap { store.session($0)?.projectID } ?? store.selectedProjectID),
-              !projectID.isEmpty else { activeMentionQuery = nil; return }
+              !projectID.isEmpty else { activeMentionQuery = nil; mentionItems = []; return }
         if let previous = value[..<at].last, !previous.isWhitespace && previous != "\n" {
             activeMentionQuery = nil
+            mentionItems = []
             return
         }
         let query = String(value[value.index(after: at)...])
         guard !query.contains(where: { $0.isWhitespace }), query.count <= 80 else {
             activeMentionQuery = nil
+            mentionItems = []
             return
         }
         activeMentionQuery = query
@@ -439,7 +461,7 @@ struct ComposerView: View {
                     files = try await store.searchFiles(projectID: projectID, query: query).files.map(\.local)
                 }
                 guard !Task.isCancelled, activeMentionQuery == query else { return }
-                mentionItems = Array(files.prefix(8))
+                mentionItems = Array(files.prefix(5))
                 #if DEBUG
                 RelayTestLog.write("mention result query=\(query) files=\(files.count) visible=\(mentionItems.count)")
                 #endif
