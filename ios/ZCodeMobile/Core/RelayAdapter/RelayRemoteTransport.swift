@@ -529,7 +529,7 @@ actor RelayRemoteTransport: RemoteTransport {
             guard saved.intentHash == hash, saved.envelope.sessionId == sessionID, saved.envelope.type == type else { throw RelayFailure(type == "createSession" ? "draft_conflict" : type == "forkAssistant" ? "fork_conflict" : type.contains("WorkspaceHook") ? "hook_review_conflict" : "input_conflict", "This request ID was already used with different content.") }
         } else {
             let envelope: RelayCommandEnvelope
-            if type == "createSession" { envelope = try await client.makeCreateSessionCommand(commandID: key) }
+            if type == "createSession" { envelope = try await client.makeCreateSessionCommand(commandID: key, config: payload) }
             else if type == "sendGoalCommand" { envelope = try await client.makeGoalCommand(sessionID: sessionID!, text: payload.requiringString("text"), commandID: key) }
             else if type == "forkAssistant" { envelope = try await client.makeForkCommand(sessionID: sessionID!, target: payload["target"] == .null ? nil : RelayRowTarget(wire: payload["target"]), commandID: key) }
             else if let hookReviewAuthorization { envelope = try await client.makeHookReviewCommand(authorization: hookReviewAuthorization, commandID: key) }
@@ -783,33 +783,84 @@ actor RelayRemoteTransport: RemoteTransport {
         if let saved = journal.state.commands[key], saved.intentHash != hash { throw RelayFailure("draft_conflict", "This draft ID was already used with different settings.") }
         if let completed = journal.state.commands[key]?.context?["completedSession"], completed.object != nil { return .object(["session": completed]) }
         var config: RelayJSON
-        if let saved = journal.state.commands[key]?.context { config = saved }
-        else {
-            let inherited = try await client.readWorkspaceState()
-            let selection = body["model"].object != nil ? body["model"] : try RelayBridgeMapping.modelSelection(settings: inherited.settings)
-            let mode = body["mode"].string ?? inherited.mode
+        var creation: RelayJSON
+        if let saved = journal.state.commands[key]?.context {
+            config = saved
+            creation = Self.creationConfig(from: saved)
+        } else {
+            // ZCode 3.16 removed readWorkspaceState and its fallback needs an
+            // existing task, so an empty workspace has no catalog to read.
+            // Let the desktop pick its default model and carry the known mode
+            // in the create command instead of blocking the first task.
+            let inherited = try? await client.readWorkspaceState()
+            let explicit = body["model"].object != nil ? body["model"] : nil
+            let selection = explicit ?? inherited.flatMap { try? RelayBridgeMapping.modelSelection(settings: $0.settings) }
+            let mode = body["mode"].string ?? inherited?.mode
             guard let mode, ["build", "edit", "plan", "yolo"].contains(mode) else { throw RelayFailure("mode_unsupported", "The desktop collaboration mode is unavailable.") }
-            let model: RelayJSON = .object(["providerId": .string(try selection.requiringString("providerId")), "modelId": .string(try selection.requiringString("modelId"))])
-            guard inherited.models.contains(where: { $0["ref"] == model && $0["disabledReason"].string == nil }) else { throw RelayFailure("model_unavailable", "The chosen desktop model is unavailable.") }
-            config = .object(["model": model, "thoughtLevel": selection["thoughtLevel"], "mode": .string(mode), "title": body["title"]])
+            var fields: [String: RelayJSON] = ["mode": .string(mode), "title": body["title"]]
+            var wire: [String: RelayJSON] = ["mode": .string(mode)]
+            if let selection, let provider = selection["providerId"].string, let modelID = selection["modelId"].string {
+                let ref: RelayJSON = .object(["providerId": .string(provider), "modelId": .string(modelID)])
+                if let inherited {
+                    guard inherited.models.contains(where: {
+                        $0["ref"]["providerId"].string == provider
+                            && $0["ref"]["modelId"].string == modelID
+                            && $0["disabledReason"].string == nil
+                    }) else { throw RelayFailure("model_unavailable", "The chosen desktop model is unavailable.") }
+                }
+                fields["model"] = ref
+                if let thought = selection["thoughtLevel"].string {
+                    fields["thoughtLevel"] = .string(thought)
+                    wire["thought"] = .string(thought)
+                }
+                wire["provider"] = .string(provider)
+                wire["model"] = .string(modelID)
+            } else if explicit != nil {
+                throw RelayFailure.invalid("The chosen desktop model is incomplete.")
+            }
+            config = .object(fields)
+            creation = .object(wire)
         }
         let full = body["confirmFullAccess"].bool == true
         if config["mode"].string == "yolo", !full { throw RelayFailure("full_access_confirmation_required", "Confirm full access before creating this task.") }
         if let title = config["title"].string, title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || title.count > 200 { throw RelayFailure.invalid("Use a title of 1–200 characters.") }
-        let ack = try await durableCommand(key: key, intent: body, sessionID: nil, type: "createSession", payload: .object([:]), context: config, confirmFullAccess: full)
+        let ack = try await durableCommand(key: key, intent: body, sessionID: nil, type: "createSession", payload: creation, context: config, confirmFullAccess: full)
         guard ack.result?["type"].string == "createSession", let id = ack.result?["sessionId"].string, RelayWire.validID(id) else { throw RelayFailure("draft_uncertain", "The desktop has not returned the created task ID. Preserve this draft ID.", outcomeUncertain: true) }
         // The ACK/session ID is already on disk. A setter failure retries this same empty task.
-        let snapshot = try await client.setSessionConfiguration(sessionID: id, model: config["model"], thoughtLevel: config["thoughtLevel"].string, mode: config["mode"].string, explicitUserAction: true, confirmFullAccess: full, registerCreatedTask: true)
+        var snapshot = try await client.setSessionConfiguration(sessionID: id, model: config["model"].object == nil ? nil : config["model"], thoughtLevel: config["thoughtLevel"].string, mode: config["mode"].string, explicitUserAction: true, confirmFullAccess: full, registerCreatedTask: config["model"].object != nil)
         snapshots[id] = snapshot
-        var registered: RelayTaskMetadata?
+        var registered = try await client.listTasks().first(where: { $0.id == id && Self.belongs($0, to: bridge) })
+        if registered == nil, config["model"].object == nil,
+           let provider = snapshot.model["providerId"].string, let modelID = snapshot.model["modelId"].string {
+            // Registration requires the exact model. The desktop chose one
+            // because the workspace was empty; reuse it to finish indexing.
+            let thought = snapshot.thoughtLevel
+                ?? snapshot.raw["settings"]["thoughtLevel"]["available"].array?
+                    .compactMap { $0["value"].string ?? $0.string }.first
+            snapshot = try await client.setSessionConfiguration(sessionID: id,
+                model: .object(["providerId": .string(provider), "modelId": .string(modelID)]),
+                thoughtLevel: thought, mode: nil, explicitUserAction: true,
+                confirmFullAccess: full, registerCreatedTask: true)
+            snapshots[id] = snapshot
+        }
         for attempt in 0..<5 {
             registered = try await client.listTasks().first(where: { $0.id == id && Self.belongs($0, to: bridge) })
             if registered != nil { break }
             if attempt < 4 { try await Task.sleep(for: .milliseconds(150)) }
         }
-        guard let registered else { throw RelayFailure("relay_task_registration_unconfirmed", "The session ID is saved, but the desktop has not confirmed it in its task index. Retry this same draft.", outcomeUncertain: true) }
+        #if DEBUG
+        if registered == nil {
+            let all = (try? await client.listTasks()) ?? []
+            RelayTestLog.write("create unregistered id=\(id) bridge=\(bridge.workspacePath)|\(bridge.workspaceIdentity ?? "-") tasks=" + all.map { "\($0.id)|\($0.workspacePath)|\($0.workspaceIdentity ?? "-")" }.joined(separator: ","))
+        }
+        #endif
+        // A task created without first input stays a desktop draft until that
+        // input arrives, so the task index may not list it yet. The durable
+        // session ID is enough to send; indexing follows the first message.
         metadata[id] = registered
-        if let title = config["title"].string, title != snapshot.title { metadata[id] = try await client.renameTask(sessionID: id, title: title, explicitUserAction: true) }
+        if let registered, let title = config["title"].string, title != snapshot.title {
+            metadata[id] = try await client.renameTask(sessionID: id, title: title, explicitUserAction: true)
+        }
         if let mode = snapshot.mode, mode != "plan" { try journal.commit { $0.permissionModes[id] = mode } }
         _ = try await loadProjection(id)
         let completed = sessionJSON(id)
@@ -818,6 +869,17 @@ actor RelayRemoteTransport: RemoteTransport {
         }
         try emit(type: "session.created", sessionID: id, data: ["session": sessionJSON(id)])
         return .object(["session": sessionJSON(id)])
+    }
+    private static func creationConfig(from context: RelayJSON) -> RelayJSON {
+        var wire: [String: RelayJSON] = [:]
+        if let mode = context["mode"].string { wire["mode"] = .string(mode) }
+        let model = context["model"]
+        if let provider = model["providerId"].string, let modelID = model["modelId"].string {
+            wire["provider"] = .string(provider)
+            wire["model"] = .string(modelID)
+        }
+        if let thought = context["thoughtLevel"].string { wire["thought"] = .string(thought) }
+        return .object(wire)
     }
     private func permissionMode(_ snapshot: RelaySessionSnapshot) -> String? {
         snapshot.mode == "plan" ? journal.state.permissionModes[snapshot.sessionID] : snapshot.mode
@@ -850,7 +912,11 @@ actor RelayRemoteTransport: RemoteTransport {
             let deadline = ContinuousClock.now + .seconds(8)
             repeat {
                 snapshot = try await client.readSession(id, messageLimit: 1)
-                if snapshot.model == selected && (thought == nil || snapshot.thoughtLevel == thought) { break }
+                // The desktop's current model keeps extra fields (for example
+                // `options`); identity is provider + model, not whole-object equality.
+                let sameModel = snapshot.model["providerId"].string == selected["providerId"].string
+                    && snapshot.model["modelId"].string == selected["modelId"].string
+                if sameModel && (thought == nil || snapshot.thoughtLevel == thought) { break }
                 if ContinuousClock.now >= deadline {
                     throw RelayFailure("settings_not_confirmed", "电脑尚未确认设置修改，请稍后重试。", outcomeUncertain: true)
                 }

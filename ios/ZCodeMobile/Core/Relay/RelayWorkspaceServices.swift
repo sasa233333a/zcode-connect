@@ -87,13 +87,66 @@ public extension RelayClient {
         }
         throw RelayFailure("settings_unavailable", "这个项目还没有可读取的任务，暂时读不到电脑的模型配置。")
     }
-    func listModels() async throws -> [RelayJSON] { try await readWorkspaceState().models }
 
-    /// Persist this envelope, submit it, persist the ACK/sessionId, then configure and read the empty task.
-    /// No firstInput is allowed: the official create handler can silently retain defaults after a config error.
-    func makeCreateSessionCommand(commandID: String) throws -> RelayCommandEnvelope {
+    func listModels() async throws -> [RelayJSON] {
+        let catalog = (try? await readWorkspaceState().models) ?? []
+        guard let tasks = try? await listTasks(),
+              let task = tasks.first(where: { ["running", "waiting"].contains($0.status ?? "") })
+                ?? tasks.first(where: { ($0.status ?? $0.displayStatus) == "idle" })
+                ?? tasks.first,
+              let config = try? await taskConfigOptions(taskID: task.taskId),
+              let modelConfig = config.first(where: { $0["category"].string == "model" || $0["id"].string == "model" }),
+              let choices = modelConfig["options"].array else {
+            return catalog
+        }
+        var byRef: [String: RelayJSON] = [:]
+        for option in catalog {
+            let ref = option["ref"]
+            guard let provider = ref["providerId"].string, let model = ref["modelId"].string else { continue }
+            byRef[provider + "\u{0}" + model] = option
+        }
+        var result: [RelayJSON] = []
+        for choice in choices {
+            guard var value = choice["value"].string, !value.isEmpty else { continue }
+            if let thought = value.firstIndex(of: "$") { value = String(value[..<thought]) }
+            let provider = choice["modelProviderId"].string
+                ?? String(value.split(separator: "/", maxSplits: 1).first ?? "")
+            let prefix = provider + "/"
+            let model = value.hasPrefix(prefix)
+                ? String(value.dropFirst(prefix.count))
+                : (value.split(separator: "/", maxSplits: 1).last.map(String.init) ?? value)
+            guard !provider.isEmpty, !model.isEmpty else { continue }
+            var fields: [String: RelayJSON] = [
+                "ref": .object(["providerId": .string(provider), "modelId": .string(model)]),
+                "label": choice["name"].string.map(RelayJSON.string) ?? .string(model),
+                "providerLabel": choice["modelProviderName"].string.map(RelayJSON.string) ?? .string(provider),
+                "reasoning": .object(["levels": choice["modelThoughtLevels"],
+                                      "defaultLevel": choice["modelDefaultThoughtLevel"]]),
+                "disabledReason": choice["disabledReason"]
+            ]
+            // Preserve modality metadata from the runtime snapshot when this
+            // model is the one the task was started with.
+            if let existing = byRef[provider + "\u{0}" + model] {
+                for key in ["supportsImages", "supportsImage", "supportsPdf", "supportsPDF", "properties"] {
+                    fields[key] = existing[key]
+                }
+            }
+            result.append(.object(fields))
+        }
+        return result.isEmpty ? catalog : result
+    }
+    func taskConfigOptions(taskID: String) async throws -> [RelayJSON] {
+        let result = try await rpc("zcode-task", "getTaskConfigOptions", ["taskId": .string(taskID)])
+        return result.array ?? []
+    }
+
+    /// The desktop accepts an optional creation config, which lets an empty
+    /// workspace start its first task without a pre-existing model snapshot.
+    func makeCreateSessionCommand(commandID: String, config: RelayJSON = .object([:])) throws -> RelayCommandEnvelope {
         guard let bridge else { throw RelayFailure("relay_no_workspace", "Select a desktop workspace first.") }
-        return .init(commandId: commandID, clientId: clientID, sessionId: nil, type: "createSession", payload: .object(["workspaceId": .string(bridge.workspaceKey)]))
+        var payload: [String: RelayJSON] = ["workspaceId": .string(bridge.workspaceKey)]
+        if config.object?.isEmpty == false { payload["config"] = config }
+        return .init(commandId: commandID, clientId: clientID, sessionId: nil, type: "createSession", payload: .object(payload))
     }
     func createSession(command: RelayCommandEnvelope, explicitUserAction: Bool) async throws -> RelayCommandAck {
         guard command.type == "createSession" else { throw RelayFailure.invalid("Expected a create-session command.") }
@@ -110,7 +163,11 @@ public extension RelayClient {
             if mode == "yolo", !confirmFullAccess { throw RelayFailure("full_access_confirmation_required", "Confirm full access for this request.") }
         }
         var snapshot = try await readSession(sessionID, messageLimit: 1)
-        let changesModel = model.map { $0 != snapshot.model } ?? false
+        func sameModel(_ lhs: RelayJSON, _ rhs: RelayJSON) -> Bool {
+            lhs["providerId"].string == rhs["providerId"].string
+                && lhs["modelId"].string == rhs["modelId"].string
+        }
+        let changesModel = model.map { !sameModel($0, snapshot.model) } ?? false
         let changesThought = thoughtLevel.map { $0 != snapshot.thoughtLevel } ?? false
         if changesModel || changesThought || registerCreatedTask {
             guard snapshot.activeTurnID == nil, !["running", "waiting"].contains(snapshot.status) else {
@@ -120,10 +177,33 @@ public extension RelayClient {
         if registerCreatedTask, model == nil { throw RelayFailure.invalid("Registering a newly created task requires its exact selected model.") }
         // The host session service's setModel path calls ensureSessionSubscription and syncSnapshotAndBroadcast.
         // A raw v4 create/read alone does not run the task service's index registration path.
-        if let model, model != snapshot.model || registerCreatedTask {
-            guard model.object.map({ Set($0.keys).isSubset(of: ["providerId", "modelId", "variant"]) }) == true,
-                  try await listModels().contains(where: { $0["ref"] == model && $0["disabledReason"].string == nil }) else { throw RelayFailure("model_unavailable", "Choose an available model returned by this desktop.") }
-            snapshot = try await RelaySessionSnapshot(raw: rpc("zcode-session", "setModel", ["sessionId": .string(sessionID), "model": model, "persistAsWorkspaceLastUsed": .bool(false)]))
+        if let model, (!sameModel(model, snapshot.model) || registerCreatedTask) {
+            // The created task already reports its exact current model. A
+            // workspace with no earlier task cannot produce a catalog yet, so
+            // trust that model and still run setModel to register the task.
+            let isCurrent = sameModel(model, snapshot.model)
+            var available = isCurrent
+            if !available {
+                available = try await listModels().contains(where: {
+                    $0["ref"]["providerId"].string == model["providerId"].string
+                        && $0["ref"]["modelId"].string == model["modelId"].string
+                        && $0["disabledReason"].string == nil
+                })
+            }
+            let validOptions = model["options"] == .null
+                || model["options"].object.map {
+                    Set($0.keys).isSubset(of: ["reasoningLevel"]) && $0.values.allSatisfy { $0.string != nil }
+                } == true
+            guard model.object.map({ Set($0.keys).isSubset(of: ["providerId", "modelId", "variant", "options"]) }) == true,
+                  validOptions, available else { throw RelayFailure("model_unavailable", "Choose an available model returned by this desktop.") }
+            // The desktop's object form of setModel requires a reasoning level.
+            var wireModel = model
+            if model["options"]["reasoningLevel"].string == nil, let thought = thoughtLevel ?? snapshot.thoughtLevel {
+                var fields = model.object ?? [:]
+                fields["options"] = .object(["reasoningLevel": .string(thought)])
+                wireModel = .object(fields)
+            }
+            snapshot = try await RelaySessionSnapshot(raw: rpc("zcode-session", "setModel", ["sessionId": .string(sessionID), "model": wireModel, "persistAsWorkspaceLastUsed": .bool(false)]))
         }
         if let thoughtLevel, thoughtLevel != snapshot.thoughtLevel {
             let levels = snapshot.raw["settings"]["thoughtLevel"]["available"].array?.compactMap { $0["value"].string ?? $0.string } ?? []
@@ -132,7 +212,11 @@ public extension RelayClient {
         }
         if let mode, mode != snapshot.mode { snapshot = try await RelaySessionSnapshot(raw: rpc("zcode-session", "setMode", ["sessionId": .string(sessionID), "mode": .string(mode)])) }
         let verified = try await readSession(sessionID, messageLimit: 1)
-        guard model.map({ $0 == verified.model }) ?? true, thoughtLevel.map({ $0 == verified.thoughtLevel }) ?? true, mode.map({ $0 == verified.mode }) ?? true else { throw RelayFailure("relay_configuration_not_applied", "The desktop did not apply the requested task settings. The task ID is preserved; do not recreate it.") }
+        let sameModel = model.map {
+            $0["providerId"].string == verified.model["providerId"].string
+                && $0["modelId"].string == verified.model["modelId"].string
+        } ?? true
+        guard sameModel, thoughtLevel.map({ $0 == verified.thoughtLevel }) ?? true, mode.map({ $0 == verified.mode }) ?? true else { throw RelayFailure("relay_configuration_not_applied", "The desktop did not apply the requested task settings. The task ID is preserved; do not recreate it.") }
         return verified
     }
 

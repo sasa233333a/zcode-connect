@@ -23,6 +23,26 @@ enum ConversationDensity: String, CaseIterable, Identifiable, Sendable {
     }
 }
 
+/// The leading glyph of a turn's one-line activity summary. Running turns stay
+/// neutral; a failure only turns red once the turn itself has settled.
+enum TranscriptActivityIndicator: Equatable {
+    case tool(String)
+    case replying
+    case waiting
+    case failed
+    case steps
+
+    var symbol: String {
+        switch self {
+        case .tool(let symbol): symbol
+        case .replying: "ellipsis.bubble"
+        case .waiting: "clock"
+        case .failed: "exclamationmark.triangle"
+        case .steps: "list.bullet"
+        }
+    }
+}
+
 struct TranscriptTurn: Identifiable, Hashable {
     let id: String
     let messages: [ChatMessage]
@@ -102,6 +122,18 @@ extension TranscriptTurn {
     }
     var latestProcessText: ChatMessage? {
         processMessages.last { !$0.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+    }
+    /// A failed step from earlier in the turn must not tint the live "replying"
+    /// state red; wait for the turn to settle before showing a failure.
+    var activityIndicator: TranscriptActivityIndicator {
+        if let step = latestActiveStep {
+            if step.status == .waiting { return .waiting }
+            if step.status == .running { return .tool(step.activityKind.symbol) }
+        }
+        if state == .running { return .replying }
+        if state == .failed || hasFailedStep { return .failed }
+        if hasWaitingStep { return .waiting }
+        return .steps
     }
 
     /// One line for the compact phone transcript: current tool while working,

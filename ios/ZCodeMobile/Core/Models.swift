@@ -205,6 +205,25 @@ struct AgentTask: Identifiable, Codable, Hashable {
     var statusText: String? = nil
 }
 
+struct BackgroundWork: Identifiable, Hashable {
+    var id: String
+    var title: String
+    var kind: String
+    var status: SessionStatus
+    var statusText: String
+    var detail: String
+    var childSessionID: String?
+
+    var symbol: String {
+        switch kind {
+        case "bash": "terminal"
+        case "workflow": "point.3.connected.trianglepath.dotted"
+        default: "gearshape.2"
+        }
+    }
+}
+
+
 struct TaskGoal: Codable, Hashable {
     var text: String
     var isPaused: Bool

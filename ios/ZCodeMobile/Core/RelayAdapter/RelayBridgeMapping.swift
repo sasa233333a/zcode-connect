@@ -109,7 +109,7 @@ enum RelayBridgeMapping {
         }
         if let directoryError { agents["directoryError"] = .string(directoryError) }
         // Directory records stay in their own official collection, not fabricated transcript rows.
-        return .object(["goal": projection.raw["goal"], "subagents": .object(agents), "availability": projection.raw["availability"].object != nil ? projection.raw["availability"] : .object([:]), "rows": .object(["window": .array(projection.rows.filter { $0["kind"].string == "subagent" })]), "revision": .int(projection.revision), "logEpoch": .string(projection.logEpoch), "seq": .int(projection.sequence)])
+        return .object(["goal": projection.raw["goal"], "subagents": .object(agents), "backgroundWorks": .array(projection.backgroundWorks), "availability": projection.raw["availability"].object != nil ? projection.raw["availability"] : .object([:]), "rows": .object(["window": .array(projection.rows.filter { $0["kind"].string == "subagent" })]), "revision": .int(projection.revision), "logEpoch": .string(projection.logEpoch), "seq": .int(projection.sequence)])
     }
     static func interaction(_ pending: RelayPendingInteraction, sessionID: String) -> RelayJSON {
         let p = pending.payload

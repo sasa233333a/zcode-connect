@@ -133,6 +133,11 @@ struct MessageView: View {
     private var compactResponseActions: some View {
         HStack(spacing: 6) {
             Spacer()
+            if store.showTimestamps {
+                Text(timestampLabel)
+                    .font(.system(size: 13))
+                    .foregroundStyle(.tertiary)
+            }
             Menu {
                 Button("复制", systemImage: "square.on.square") { store.copy(message.text) }
                 Button {

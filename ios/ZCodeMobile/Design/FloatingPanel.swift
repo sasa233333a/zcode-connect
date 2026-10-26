@@ -9,6 +9,7 @@ private struct FloatingPanelRequest: Identifiable {
     let width: CGFloat
     let cornerRadius: CGFloat
     let placement: FloatingPanelPlacement
+    let dismissesOnBackgroundTap: Bool
     let content: AnyView
     let setPresented: (Bool) -> Void
     let onDismiss: () -> Void
@@ -27,6 +28,7 @@ private struct NativeFloatingPanel<Panel: View>: ViewModifier {
     let preferredWidth: CGFloat
     let cornerRadius: CGFloat
     let placement: FloatingPanelPlacement
+    let dismissesOnBackgroundTap: Bool
     let onDismiss: () -> Void
     @ViewBuilder let panel: () -> Panel
 
@@ -35,7 +37,8 @@ private struct NativeFloatingPanel<Panel: View>: ViewModifier {
         content.anchorPreference(key: FloatingPanelPreference.self, value: .bounds) { anchor in
             [FloatingPanelRequest(id: id, anchor: anchor, isPresented: isPresented,
                                   width: preferredWidth, cornerRadius: cornerRadius,
-                                  placement: placement, content: AnyView(panel()),
+                                  placement: placement, dismissesOnBackgroundTap: dismissesOnBackgroundTap,
+                                  content: AnyView(panel()),
                                   setPresented: { isPresented = $0 }, onDismiss: onDismiss)]
         }
     }
@@ -78,7 +81,7 @@ private struct FloatingPanelPresentation: View {
             left = min(max(12, source.minX - 10), max(12, container.width - width - 12))
             bottom = min(container.height - 8, source.maxY + 5)
         case .above:
-            left = (container.width - width) / 2
+            left = min(max(12, source.midX - width / 2), max(12, container.width - width - 12))
             bottom = source.minY - 12
         }
         return CGRect(x: left, y: max(16, bottom - panelHeight), width: width, height: panelHeight)
@@ -87,9 +90,11 @@ private struct FloatingPanelPresentation: View {
     var body: some View {
         ZStack(alignment: .topLeading) {
             if mounted {
-                Color.clear.contentShape(Rectangle())
-                    .onTapGesture { request.setPresented(false) }
-                    .accessibilityHidden(true)
+                if request.dismissesOnBackgroundTap {
+                    Color.clear.contentShape(Rectangle())
+                        .onTapGesture { request.setPresented(false) }
+                        .accessibilityHidden(true)
+                }
                 GlassEffectContainer(spacing: 0) {
                     request.content.frame(width: width).fixedSize(horizontal: false, vertical: true)
                         .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { value in
@@ -104,7 +109,7 @@ private struct FloatingPanelPresentation: View {
                                                      id: request.id, namespace: glassNamespace))
                         .opacity(height > 0 ? (reduceMotion ? progress : 1) : 0)
                         .allowsHitTesting(request.isPresented && progress >= 1)
-                        .accessibilityAddTraits(.isModal)
+                        .accessibilityAddTraits(request.dismissesOnBackgroundTap ? .isModal : [])
                         .accessibilityAction(.escape) { request.setPresented(false) }
                 }
             }
@@ -183,10 +188,12 @@ extension View {
     func nativeFloatingPanel<Panel: View>(isPresented: Binding<Bool>, preferredWidth: CGFloat,
                                          cornerRadius: CGFloat = 17,
                                          placement: FloatingPanelPlacement = .above,
+                                         dismissesOnBackgroundTap: Bool = true,
                                          onDismiss: @escaping () -> Void = {},
                                          @ViewBuilder content: @escaping () -> Panel) -> some View {
         modifier(NativeFloatingPanel(isPresented: isPresented, preferredWidth: preferredWidth,
                                      cornerRadius: cornerRadius, placement: placement,
+                                     dismissesOnBackgroundTap: dismissesOnBackgroundTap,
                                      onDismiss: onDismiss, panel: content))
     }
 }

@@ -106,12 +106,14 @@ struct PadShell: View {
                                 }
                             }
                         }
-                        .padding(.vertical, 3)
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 4)
+                        .background(selectedDevice?.id == device.id
+                                    ? Color.accentColor.opacity(0.16) : Color.clear,
+                                    in: RoundedRectangle(cornerRadius: 12, style: .continuous))
                         .contentShape(Rectangle())
                     }
                     .buttonStyle(.plain)
-                    .listRowBackground(selectedDevice?.id == device.id
-                                       ? Color.accentColor.opacity(0.14) : Color.clear)
                 }
             }
 
@@ -221,12 +223,14 @@ struct PadShell: View {
                         .foregroundStyle(session.status == .failed ? .red : .secondary)
                 }
             }
+            .padding(.horizontal, 8)
             .padding(.vertical, 4)
+            .background(store.currentSessionID == session.id
+                        ? Color.accentColor.opacity(0.16) : Color.clear,
+                        in: RoundedRectangle(cornerRadius: 12, style: .continuous))
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .listRowBackground(store.currentSessionID == session.id
-                           ? Color.accentColor.opacity(0.14) : Color.clear)
     }
 
     @ToolbarContentBuilder private var conversationToolbar: some ToolbarContent {
@@ -272,12 +276,14 @@ struct PadShell: View {
                         .foregroundStyle(.tertiary)
                 }
             }
-            .padding(.vertical, 3)
+            .padding(.horizontal, 8)
+            .padding(.vertical, 4)
+            .background(selectedWorkspace?.id == workspace.id
+                        ? Color.accentColor.opacity(0.16) : Color.clear,
+                        in: RoundedRectangle(cornerRadius: 12, style: .continuous))
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .listRowBackground(selectedWorkspace?.id == workspace.id
-                           ? Color.accentColor.opacity(0.14) : Color.clear)
     }
 
     private func selectDevice(_ device: HomeDeviceGroup) {

@@ -126,6 +126,24 @@ struct AdvancedSettingsView: View {
     private var currentModel: RemoteModel? {
         store.models.first { $0.providerId == selection?.providerId && $0.modelId == selection?.modelId }
     }
+    private struct ProviderModels: Identifiable {
+        let id: String
+        let name: String
+        let models: [RemoteModel]
+    }
+    private var providerModels: [ProviderModels] {
+        var order: [String] = []
+        var names: [String: String] = [:]
+        var grouped: [String: [RemoteModel]] = [:]
+        for model in store.models {
+            if grouped[model.providerId] == nil {
+                order.append(model.providerId)
+                names[model.providerId] = model.providerName
+            }
+            grouped[model.providerId, default: []].append(model)
+        }
+        return order.map { ProviderModels(id: $0, name: names[$0] ?? $0, models: grouped[$0] ?? []) }
+    }
     private var thoughtChoices: [String] {
         let values = sessionID.flatMap { store.remoteSettings[$0]?.thoughtLevels } ?? currentModel?.thoughtLevels ?? []
         var seen = Set<String>()
@@ -150,18 +168,22 @@ struct AdvancedSettingsView: View {
                     } label: { settingRow("模型", value: store.options.model) }
                 } else {
                     Menu {
-                        ForEach(store.models) { model in
-                            Button {
-                                apply(model: ModelSelection(providerId: model.providerId, modelId: model.modelId,
-                                    thoughtLevel: model.thoughtLevels.contains(selection?.thoughtLevel ?? "")
-                                        ? selection?.thoughtLevel : model.defaultThoughtLevel))
-                            } label: {
-                                if let reason = model.unavailableReason, !model.available {
-                                    Label("\(model.name) · \(model.providerName) · \(reason == "provider_disabled" ? "未启用" : "暂不可用")", systemImage: "exclamationmark.circle")
-                                } else if model.id == currentModel?.id {
-                                    Label("\(model.name) · \(model.providerName)", systemImage: "checkmark")
-                                } else { Text("\(model.name) · \(model.providerName)") }
-                            }.disabled(!model.available)
+                        ForEach(providerModels) { provider in
+                            Section(provider.name) {
+                                ForEach(provider.models) { model in
+                                    Button {
+                                        apply(model: ModelSelection(providerId: model.providerId, modelId: model.modelId,
+                                            thoughtLevel: model.thoughtLevels.contains(selection?.thoughtLevel ?? "")
+                                                ? selection?.thoughtLevel : model.defaultThoughtLevel))
+                                    } label: {
+                                        if let reason = model.unavailableReason, !model.available {
+                                            Label("\(model.name) · \(reason == "provider_disabled" ? "未启用" : "暂不可用")", systemImage: "exclamationmark.circle")
+                                        } else if model.id == currentModel?.id {
+                                            Label(model.name, systemImage: "checkmark")
+                                        } else { Text(model.name) }
+                                    }.disabled(!model.available)
+                                }
+                            }
                         }
                     } label: {
                         settingRow("模型", value: currentModel?.name ?? selection?.modelId ?? "沿用电脑配置")

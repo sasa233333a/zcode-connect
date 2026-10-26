@@ -98,7 +98,7 @@ struct TranscriptTurnView: View {
 
     private func summaryRow(_ text: String) -> some View {
         HStack(spacing: 8) {
-            Image(systemName: summarySymbol)
+            Image(systemName: turn.activityIndicator.symbol)
                 .font(.system(size: 17, weight: .regular)).frame(width: 22)
                 .accessibilityHidden(true)
             Text(text).lineLimit(1).truncationMode(.middle).monospacedDigit()
@@ -112,17 +112,12 @@ struct TranscriptTurnView: View {
         .contentShape(Rectangle())
     }
 
-    private var summarySymbol: String {
-        if let step = turn.latestActiveStep, step.status == .running { return step.activityKind.symbol }
-        if turn.hasFailedStep || turn.state == .failed { return "exclamationmark.triangle" }
-        if turn.hasWaitingStep { return "clock" }
-        return "list.bullet"
-    }
-
     private var summaryColor: Color {
-        if turn.hasFailedStep || turn.state == .failed { return .red }
-        if turn.hasWaitingStep { return .orange }
-        return .secondary
+        switch turn.activityIndicator {
+        case .failed: .red
+        case .waiting: .orange
+        default: .secondary
+        }
     }
 
     private var processTitle: String {

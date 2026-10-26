@@ -58,6 +58,7 @@ final class AppStore {
     var locallyReadTimestamps: [String: Double] = [:]
     var goals: [String: TaskGoal] = [:]
     var agentTasks: [String: [AgentTask]] = [:]
+    var backgroundWorks: [String: [BackgroundWork]] = [:]
     var hostGoals: [String: RelayHostGoal] = [:]
     var hostAgents: [String: RelayHostAgents] = [:]
     var changingGoals: Set<String> = []
@@ -110,6 +111,7 @@ final class AppStore {
 
     func refreshModels() async {
         guard !isReferenceMode, let client, connection.isOnline else { return }
+        if !models.isEmpty, let last = lastModelsRefresh, Date().timeIntervalSince(last) < 30 { return }
         let epoch = connectionEpoch
         struct Catalog: Decodable, Sendable { var models: [RemoteModel] }
         do {
@@ -117,7 +119,17 @@ final class AppStore {
             guard epoch == connectionEpoch else { return }
             var ids = Set<String>()
             models = result.models.filter { ids.insert($0.id).inserted }
-        } catch { /* Keep last known catalog during a transient refresh failure. */ }
+            lastModelsRefresh = Date()
+            #if DEBUG
+            RelayTestLog.write("models refresh ok count=\(models.count)")
+            #endif
+        } catch {
+            // Keep last known catalog during a transient refresh failure.
+            #if DEBUG
+            let code = (error as? RelayFailure)?.code ?? (error as? BridgeFailure)?.code ?? "error"
+            RelayTestLog.write("models refresh failed [\(code)] \(error.localizedDescription)")
+            #endif
+        }
     }
 
     func dismissPendingSubmission(_ key: String) {
@@ -185,6 +197,7 @@ final class AppStore {
     @ObservationIgnored private var retiredActivityEpochs: [String: Set<String>] = [:]
     @ObservationIgnored private var indexRequest = UUID()
     @ObservationIgnored private var refreshRequest = UUID()
+    @ObservationIgnored private var lastModelsRefresh: Date?
 
     var relayWorkspaces: [RelayWorkspace] = []
     var relayAccount: RelayAccount?
@@ -260,7 +273,7 @@ final class AppStore {
             enterReferenceMode()
             if let index = args.firstIndex(of: "--screen"), args.count > index + 1 {
                 switch args[index + 1] {
-                case "chat", "goal", "agents", "keyboard", "reasoning", "permissions", "attachments", "thread-menu", "rename":
+                case "chat", "goal", "agents", "keyboard", "reasoning", "permissions", "attachments", "slash-review", "mention-review", "thread-menu", "rename":
                     path = [.session(ReferenceData.conversationID)]
                 case "activity-transition-review":
                     transcripts[ReferenceData.conversationID] = [
@@ -269,6 +282,15 @@ final class AppStore {
                             ToolStep(id: "transition-read", title: "Read", detail: "文件读取详情", status: .completed, inputJSON: #"{"path":"/project/ChatView.swift"}"#),
                             ToolStep(id: "transition-test", title: "RunTests", detail: "测试执行详情", status: .running, inputJSON: #"{"name":"阅读体验测试"}"#)
                         ], transcript: .init(turnID: "transition", state: .running, role: .process))
+                    ]
+                    setStatus(ReferenceData.conversationID, .running)
+                    path = [.session(ReferenceData.conversationID)]
+                case "failed-reply-review":
+                    transcripts[ReferenceData.conversationID] = [
+                        ChatMessage(id: "failed-reply-user", role: .user, text: "继续修复这个问题", transcript: .init(turnID: "failed-reply", state: .running, role: .input)),
+                        ChatMessage(id: "failed-reply-process", role: .assistant, text: "我换一种方式继续处理。", steps: [
+                            ToolStep(id: "failed-reply-bash", title: "Bash", detail: "命令执行失败", status: .failed)
+                        ], transcript: .init(turnID: "failed-reply", state: .running, role: .process))
                     ]
                     setStatus(ReferenceData.conversationID, .running)
                     path = [.session(ReferenceData.conversationID)]
@@ -379,6 +401,7 @@ final class AppStore {
         // Goals and agents are host projections, never restored from local UI preferences.
         goals = [:]
         agentTasks = [:]
+        backgroundWorks = [:]
         hostGoals = [:]
         hostAgents = [:]
         localTitles = decode([String: String].self, key: scopedKey("titles")) ?? [:]
@@ -454,7 +477,8 @@ final class AppStore {
         return grouped.map { identity, members in
             let active = members.first { $0.id == activeProfileID }
             let workspaces = members.map { profile -> HomeWorkspaceGroup in
-                let isActive = !isReferenceMode && profile.id == activeProfileID
+                let isReferencePad = isReferenceMode && profile.id == "reference-pad"
+                let isActive = isReferencePad || (!isReferenceMode && profile.id == activeProfileID)
                 let cached = profileReadingStates[profile.id]
                 let sessions = isActive ? self.sessions : (cached?.sessions ?? [])
                 let projects = isActive ? self.projects : (cached?.projects ?? [])
@@ -695,14 +719,50 @@ final class AppStore {
                 if openFirstTask { await relayTestOpenFirstTask() }
                 return
             }
-            let workspace = relayWorkspaces.first(where: { $0.workspacePath.contains("zocode connect") })
+            let preferredWorkspace = ProcessInfo.processInfo.arguments.firstIndex(of: "--relay-test-workspace").flatMap {
+                ProcessInfo.processInfo.arguments.indices.contains($0 + 1) ? ProcessInfo.processInfo.arguments[$0 + 1] : nil
+            }
+            let workspace = preferredWorkspace.flatMap { preferred in
+                relayWorkspaces.first { ($0.workspacePath as NSString).lastPathComponent == preferred }
+            }
+                ?? relayWorkspaces.first(where: { $0.workspacePath.contains("zocode connect") })
                 ?? (relayWorkspaces.count > 1 ? relayWorkspaces[1] : nil)
                 ?? relayWorkspaces.first(where: { $0.canAttach }) ?? relayWorkspaces.first
             guard let workspace else { throw BridgeFailure(message: "relay-test: 没有可连接的项目", code: "relay_test_no_workspace") }
             RelayTestLog.write("workspace \((workspace.workspacePath as NSString).lastPathComponent)")
             try await completeRelayPairing(workspaceKey: workspace.id, name: "", context: context)
             RelayTestLog.write("connected sessions=\(sessions.count) online=\(connection.isOnline)")
+            if let index = ProcessInfo.processInfo.arguments.firstIndex(of: "--relay-test-new-chat"),
+               ProcessInfo.processInfo.arguments.count > index + 1 {
+                let text = ProcessInfo.processInfo.arguments[index + 1]
+                let key = "new:\(selectedProjectID ?? "none")"
+                RelayTestLog.write("new-chat begin project=\(selectedProjectID ?? "nil") models=\(models.count)")
+                let id = await submitDraft(text, attachments: [], draftKey: key, sessionID: nil)
+                RelayTestLog.write("new-chat result=\(id ?? "nil") error=\(errorMessage ?? "none") sessions=\(sessions.count)")
+                if let id {
+                    path = [.session(id)]
+                    if ProcessInfo.processInfo.arguments.contains("--relay-test-archive-created") {
+                        try? await Task.sleep(for: .seconds(2))
+                        archive(id)
+                        RelayTestLog.write("new-chat archived \(id)")
+                    }
+                }
+            }
+            if let index = ProcessInfo.processInfo.arguments.firstIndex(of: "--relay-test-archive"),
+               ProcessInfo.processInfo.arguments.count > index + 1 {
+                let id = ProcessInfo.processInfo.arguments[index + 1]
+                for _ in 0..<20 where !sessions.contains(where: { $0.id == id }) {
+                    try? await Task.sleep(for: .milliseconds(250))
+                }
+                archive(id)
+                try? await Task.sleep(for: .seconds(2))
+                RelayTestLog.write("archive \(id) present=\(sessions.contains { $0.id == id })")
+            }
             if openFirstTask { await relayTestOpenFirstTask() }
+            if let index = ProcessInfo.processInfo.arguments.firstIndex(of: "--relay-test-session"),
+               ProcessInfo.processInfo.arguments.count > index + 1 {
+                await relayTestOpenSession(ProcessInfo.processInfo.arguments[index + 1])
+            }
             if ProcessInfo.processInfo.arguments.contains("--relay-test-image") {
                 await relayTestUploadImage()
             }
@@ -727,6 +787,7 @@ final class AppStore {
         }
         let ok = await connectDiscoveredDevice(device)
         RelayTestLog.write("discover connect ok=\(ok) online=\(connection.isOnline) workspaces=\(relayWorkspaces.count) sessions=\(sessions.count) active=\(activeProfile?.relayWorkspaceKey ?? "nil")")
+        if !ok { RelayTestLog.write("discover failure \(errorMessage ?? "unknown") connection=\(connection.label)") }
         if openFirstTask { await relayTestOpenFirstTask() }
         if let index = ProcessInfo.processInfo.arguments.firstIndex(of: "--relay-test-session"),
            ProcessInfo.processInfo.arguments.count > index + 1 {
@@ -748,6 +809,58 @@ final class AppStore {
             RelayTestLog.write("earlier done loaded=\(histories[id]?.loadedRowCount ?? -1) total=\(histories[id]?.totalRowCount ?? -1) hasMore=\(histories[id]?.hasMore ?? false)")
         }
         if ProcessInfo.processInfo.arguments.contains("--relay-test-image") { await relayTestUploadImage() }
+        if ProcessInfo.processInfo.arguments.contains("--relay-test-models") {
+            await refreshModels()
+            RelayTestLog.write("models debug count=\(models.count) ids=" + models.map(\.id).joined(separator: ","))
+        }
+        if let index = ProcessInfo.processInfo.arguments.firstIndex(of: "--relay-test-switch-model"),
+           ProcessInfo.processInfo.arguments.count > index + 1,
+           let id = currentSessionID {
+            await loadSettings(id)
+            let original = modelSelections[id]
+            let raw = ProcessInfo.processInfo.arguments[index + 1]
+            let parts = raw.split(separator: "/", maxSplits: 1)
+            if parts.count == 2 {
+                let target = ModelSelection(providerId: String(parts[0]), modelId: String(parts[1]),
+                                            thoughtLevel: original?.thoughtLevel ?? "max")
+                let changed = await updateSettings(id, model: target)
+                RelayTestLog.write("switch model \(raw) changed=\(changed) current=\(modelSelections[id]?.providerId ?? "nil")/\(modelSelections[id]?.modelId ?? "nil") error=\(errorMessage ?? "none")")
+                if changed, let original {
+                    let restored = await updateSettings(id, model: original)
+                    RelayTestLog.write("switch restore changed=\(restored) current=\(modelSelections[id]?.providerId ?? "nil")/\(modelSelections[id]?.modelId ?? "nil") error=\(errorMessage ?? "none")")
+                }
+            }
+        }
+        if let index = ProcessInfo.processInfo.arguments.firstIndex(of: "--relay-test-set-model"),
+           ProcessInfo.processInfo.arguments.count > index + 1,
+           let id = currentSessionID {
+            await loadSettings(id)
+            let raw = ProcessInfo.processInfo.arguments[index + 1]
+            let parts = raw.split(separator: "/", maxSplits: 1)
+            if parts.count == 2 {
+                let target = ModelSelection(providerId: String(parts[0]), modelId: String(parts[1]),
+                                            thoughtLevel: modelSelections[id]?.thoughtLevel ?? "max")
+                let changed = await updateSettings(id, model: target)
+                RelayTestLog.write("set model \(raw) changed=\(changed) current=\(modelSelections[id]?.providerId ?? "nil")/\(modelSelections[id]?.modelId ?? "nil") error=\(errorMessage ?? "none")")
+            }
+        }
+        if ProcessInfo.processInfo.arguments.contains("--relay-test-config"), let id = currentSessionID, let relayClient {
+            let attempts: [(String, String, [String: RelayJSON])] = [
+                ("zcode-task", "getTaskConfigOptions", ["taskId": .string(id)]),
+                ("zcode-session", "getTaskConfigOptions", ["sessionId": .string(id)]),
+                ("zcode-agent", "getTaskConfigOptions", ["sessionId": .string(id)])
+            ]
+            for (channel, method, params) in attempts {
+                do {
+                    let result = try await relayClient.rpc(channel, method, params)
+                    let text = String(data: try result.data(), encoding: .utf8) ?? ""
+                    RelayTestLog.write("config \(channel)/\(method) ok \(text.prefix(2500))")
+                } catch {
+                    let failure = error as? RelayFailure
+                    RelayTestLog.write("config \(channel)/\(method) failed [\(failure?.code ?? "error")] \(failure?.message ?? error.localizedDescription)")
+                }
+            }
+        }
         if ProcessInfo.processInfo.arguments.contains("--relay-test-switch") {
             let currentID = activeProfileID
             let target = profiles.first { $0.id != currentID && $0.relayWorkspaceKey?.contains("zocode connect") == true }
@@ -1073,9 +1186,29 @@ final class AppStore {
         transcripts["reference-2"] = ReferenceData.homePreviewMessages
         goals[ReferenceData.conversationID] = ReferenceData.goal
         agentTasks[ReferenceData.conversationID] = ReferenceData.agents
+        backgroundWorks[ReferenceData.conversationID] = [
+            .init(id: "reference-bg-bash", title: "python3 -m http.server 8080",
+                  kind: "bash", status: .running, statusText: "运行中", detail: "", childSessionID: nil),
+            .init(id: "reference-bg-workflow", title: "导出发布清单",
+                  kind: "workflow", status: .waiting, statusText: "等待结果", detail: "", childSessionID: nil)
+        ]
+        lastSlashCommands = ReferenceData.slashCommands
         options.model = "6 Astra"
         options.reasoning = .medium
         options.permission = .full
+        #if DEBUG
+        if ProcessInfo.processInfo.arguments.contains("--pad-layout-review") {
+            let profile = ConnectionProfile(id: "reference-pad", name: "Example-Mac.local",
+                                            baseURL: "https://example.invalid",
+                                            relayDeviceID: "reference-device",
+                                            relayWorkspaceKey: "reference-pad",
+                                            relayServiceID: "reference-service",
+                                            relayWorkspaceLabel: "zocode connect",
+                                            relayWorkspacePurpose: "project")
+            profiles = [profile]
+            activeProfileID = profile.id
+        }
+        #endif
     }
 
     func leaveReferenceMode() {
@@ -1089,6 +1222,8 @@ final class AppStore {
         projects = []
         goals = [:]
         agentTasks = [:]
+        backgroundWorks = [:]
+        lastSlashCommands = []
         hostName = activeProfile?.name ?? "你的电脑"
         options = SessionOptions()
         path = []
@@ -1228,6 +1363,7 @@ final class AppStore {
                 projectSettings = [:]
                 goals = [:]
                 agentTasks = [:]
+                backgroundWorks = [:]
                 if isReferenceMode || activeProfileID != profile.id { path = [] }
                 }
                 isReferenceMode = false
@@ -1713,7 +1849,7 @@ final class AppStore {
         sessionRevisions = [:]
         activityRevisions = [:]
         hostActivityVersions = [:]; retiredActivityEpochs = [:]
-        goals = [:]; hostGoals = [:]; hostAgents = [:]; agentTasks = [:]
+        goals = [:]; hostGoals = [:]; hostAgents = [:]; agentTasks = [:]; backgroundWorks = [:]
         indexRequest = UUID()
         eventRevision = 0
         connectedAt = nil
@@ -2631,7 +2767,7 @@ final class AppStore {
         guard !isReferenceMode else { return }
         guard let activity, let encoded = try? JSONEncoder().encode(activity),
               let projection = try? RelayJSON(data: encoded) else {
-            hostGoals[id] = nil; hostAgents[id] = nil; goals[id] = nil; agentTasks[id] = nil
+            hostGoals[id] = nil; hostAgents[id] = nil; goals[id] = nil; agentTasks[id] = nil; backgroundWorks[id] = nil
             return
         }
         if let epoch = projection["logEpoch"].string, let sequence = projection["seq"].integer {
@@ -2649,6 +2785,32 @@ final class AppStore {
         goals[id] = goal.map { TaskGoal(text: $0.objective, isPaused: !$0.isActive, elapsed: goalElapsed(id, at: .now)) }
         let agents = RelayHostAgents(projection: projection)
         hostAgents[id] = agents
+        let works = projection["backgroundWorks"].array ?? []
+        backgroundWorks[id] = works.compactMap { value in
+            guard value["kind"].string != "subagent",
+                  let workID = value["workId"].string,
+                  let title = value["title"].string, !title.isEmpty else { return nil }
+            let rawStatus = value["status"].string ?? ""
+            let status: SessionStatus = switch rawStatus {
+            case "running": .running
+            case "resultPending": .waiting
+            case "failed": .failed
+            case "cancelled": .idle
+            default: .idle
+            }
+            let labels = ["running": "运行中", "resultPending": "等待结果", "failed": "失败", "cancelled": "已取消"]
+            let blocked = value["blocked"].bool == true
+            return BackgroundWork(
+                id: workID,
+                title: title,
+                kind: value["kind"].string ?? "bash",
+                status: status,
+                statusText: blocked ? "等待确认" : (labels[rawStatus] ?? "状态待更新"),
+                detail: value["detail"].string ?? "",
+                childSessionID: value["childSessionId"].string
+            )
+        }
+        if backgroundWorks[id]?.isEmpty == true { backgroundWorks[id] = nil }
         guard let agents, agents.isVisible else { agentTasks[id] = nil; return }
         let rows = projection["rows"]["window"].array ?? []
         var seen: Set<String> = []
